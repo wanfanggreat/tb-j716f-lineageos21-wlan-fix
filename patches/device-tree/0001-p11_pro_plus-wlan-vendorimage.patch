@@ -1,0 +1,121 @@
+From 2545d016f498c910f82f1fe44e62afe0f9ab8d6b Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 03:24:41 +0800
+Subject: [PATCH 1/6] =?UTF-8?q?p11=5Fpro=5Fplus:=20=E4=BF=AE=E5=A4=8D=20wl?=
+ =?UTF-8?q?an=20=E5=9B=BA=E4=BB=B6=E7=AC=A6=E5=8F=B7=E9=93=BE=E5=AF=BC?=
+ =?UTF-8?q?=E8=87=B4=E7=9A=84=20vendorimage=20=E7=BC=BA=E6=BA=90?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+固件里这 7 条路径是绝对符号链接，指向宿主机不存在的目标（挂载镜像提取时
+get_file 的 [ -f ] 门槛失败即跳过），而 setup-makefiles 仍为每行生成
+PRODUCT_COPY_FILES，留下 7 条源文件不存在的规则，vendorimage/bacon 必挂：
+
+  ninja: error: 'vendor/.../proprietary/vendor/firmware/wlanmdsp.otaupdate',
+  needed by 'out/.../vendor/firmware/wlanmdsp.otaupdate',
+  missing and no known rule to make it
+
+上游用 adb pull 提取（会解引用符号链）故不暴露，本设备改挂载镜像提取才现形。
+
+处理：
+- proprietary-files.txt: 注释这 7 行，注明原因与替代实现
+- Android.mk: WIFI_FIRMWARE_SYMLINKS 补齐 qca6390/、qca6490/ 两对子目录
+  符号链，与固件原状一致。内核 qcacld 在 DYNAMIC_SINGLE_CHIP 模式下按
+  wlan/qca_cld/<chip>/WCNSS_qcom_cfg.ini 查配置（WLAN_INI_FILE，
+  PREFIX=DYNAMIC_SINGLE_CHIP/），本机驱动为 qca_cld3_qca6390/6490，
+  故该子目录路径运行时真会被读取；同时 mkdir -p 建好子目录。
+- CneApp 那条由 soong install_symlink 模块产出同一路径
+  (hardware/qcom-caf/common/fwk-detect/Android.bp)；
+  wlanmdsp.otaupdate 目标 /data/vendor/firmware/wlanmdsp.mb 由设备运行时
+  生成，固件包内本就不存在，全树无代码引用。
+
+验证: PRODUCT_COPY_FILES 缺源数 2167 -> 2160 (缺失 0)；
+ninja -n systemimage / vendorimage 均无 "missing and no known rule"。
+---
+ Android.mk            | 14 +++++++++++++-
+ proprietary-files.txt | 27 ++++++++++++++++++++-------
+ 2 files changed, 33 insertions(+), 8 deletions(-)
+
+diff --git a/Android.mk b/Android.mk
+index 7ff1235..14191cd 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -153,12 +153,24 @@ $(RFS_MSM_SLPI_SYMLINKS): $(LOCAL_INSTALLED_MODULE)
+ 
+ ALL_DEFAULT_INSTALLED_MODULES += $(RFS_APQ_GNSS_SYMLINKS) $(RFS_MDM_ADSP_SYMLINKS) $(RFS_MDM_CDSP_SYMLINKS) $(RFS_MDM_MPSS_SYMLINKS) $(RFS_MDM_SLPI_SYMLINKS) $(RFS_MDM_TN_SYMLINKS) $(RFS_MSM_ADSP_SYMLINKS) $(RFS_MSM_CDSP_SYMLINKS) $(RFS_MSM_MPSS_SYMLINKS) $(RFS_MSM_SLPI_SYMLINKS)
+ 
++# 固件里 qca6390/ 与 qca6490/ 子目录各有一对同名符号链接，同样保留：
++# 内核 qcacld 在 DYNAMIC_SINGLE_CHIP 模式下按
++#   wlan/qca_cld/<chip>/WCNSS_qcom_cfg.ini
++#   wlan/qca_cld/<chip>/wlan_mac.bin
++# 查找配置（见 kernel/lenovo/sm8250/drivers/staging/qcacld-3.0/core/hdd/inc/
++# wlan_hdd_misc.h 的 WLAN_INI_FILE / WLAN_MAC_FILE，PREFIX=DYNAMIC_SINGLE_CHIP/），
++# 而本机 WLAN 驱动是 kona 第三代（prebuilts/modules/qca_cld3_qca6390.ko、
++# qca_cld3_qca6490.ko），故这两个子目录是运行时真正被读取的路径。
+ WIFI_FIRMWARE_SYMLINKS := $(TARGET_OUT_VENDOR)/firmware/wlan/qca_cld
+ $(WIFI_FIRMWARE_SYMLINKS): $(LOCAL_INSTALLED_MODULE)
+ 	@echo "Creating wifi firmware symlinks: $@"
+-	@mkdir -p $@
++	@mkdir -p $@/qca6390 $@/qca6490
+ 	$(hide) ln -sf /vendor/etc/wifi/WCNSS_qcom_cfg.ini $@/WCNSS_qcom_cfg.ini
+ 	$(hide) ln -sf /mnt/vendor/persist/wlan_mac.bin $@/wlan_mac.bin
++	$(hide) ln -sf /vendor/etc/wifi/qca6390/WCNSS_qcom_cfg.ini $@/qca6390/WCNSS_qcom_cfg.ini
++	$(hide) ln -sf /mnt/vendor/persist/qca6390/wlan_mac.bin $@/qca6390/wlan_mac.bin
++	$(hide) ln -sf /vendor/etc/wifi/qca6490/WCNSS_qcom_cfg.ini $@/qca6490/WCNSS_qcom_cfg.ini
++	$(hide) ln -sf /mnt/vendor/persist/qca6490/wlan_mac.bin $@/qca6490/wlan_mac.bin
+ 
+ ALL_DEFAULT_INSTALLED_MODULES += $(WIFI_FIRMWARE_SYMLINKS)
+ 
+diff --git a/proprietary-files.txt b/proprietary-files.txt
+index accdc5b..98f6e00 100644
+--- a/proprietary-files.txt
++++ b/proprietary-files.txt
+@@ -1711,11 +1711,20 @@ vendor/etc/wifi/wpa_supplicant_overlay.conf
+ 
+ # Wi-Fi firmware
+ vendor/firmware/wigig/wigig.ini
+-vendor/firmware/wlan/qca_cld/qca6390/WCNSS_qcom_cfg.ini
+-vendor/firmware/wlan/qca_cld/qca6390/wlan_mac.bin
+-vendor/firmware/wlan/qca_cld/qca6490/WCNSS_qcom_cfg.ini
+-vendor/firmware/wlan/qca_cld/qca6490/wlan_mac.bin
+-vendor/firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini
++# 注意: 以下 5 条 wlan 固件路径在固件里是**指向别处的符号链接**
++# (如 qca6390/WCNSS_qcom_cfg.ini -> /vendor/etc/wifi/qca6390/WCNSS_qcom_cfg.ini)，
++# 目标在宿主机上不存在，提取必然失败，却在 vendor.mk 里留下 source 缺失的
++# PRODUCT_COPY_FILES，导致 vendorimage/bacon 报
++#   ninja: error: '...proprietary/vendor/firmware/...' missing and no known rule
++# 上游用 adb pull 提取时符号链接会被解引用成真文件，故上游不报错。
++# 这里改为在 device/lenovo/p11_pro_plus/Android.mk 中用 mk 规则建符号链接，
++# 与固件原状一致（运行时指向 /vendor/etc/wifi/... 与 /mnt/vendor/persist/...）。
++# 如需重新加入，请确认提取源能解析这些链接。
++# vendor/firmware/wlan/qca_cld/qca6390/WCNSS_qcom_cfg.ini
++# vendor/firmware/wlan/qca_cld/qca6390/wlan_mac.bin
++# vendor/firmware/wlan/qca_cld/qca6490/WCNSS_qcom_cfg.ini
++# vendor/firmware/wlan/qca_cld/qca6490/wlan_mac.bin
++# vendor/firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini
+ 
+ # Wi-Fi Display
+ -framework/WfdCommon.jar
+@@ -1823,7 +1832,9 @@ vendor/lib64/vendor.qti.hardware.wifidisplaysession@1.0.so
+ 
+ # Miscellaneous
+ vendor/app/CACertService/CACertService.apk
+-vendor/app/CneApp/lib/arm64/libvndfwk_detect_jni.qti.so
++# vendor/app/CneApp/lib/arm64/libvndfwk_detect_jni.qti.so
++#   ↑ 固件里是指向 /vendor/lib64/libvndfwk_detect_jni.qti.so 的符号链接，
++#     提取源无法解析 → 见 device/lenovo/p11_pro_plus/Android.mk 的 CNE 符号链接规则
+ vendor/app/ConnectionSecurityService/ConnectionSecurityService.apk
+ vendor/app/QFingerprintService/QFingerprintService.apk
+ vendor/app/TrustZoneAccessService/TrustZoneAccessService.apk
+@@ -2034,7 +2045,9 @@ vendor/firmware/spk3_fast_switch3.txt
+ vendor/firmware/spk4_fast_switch1.txt
+ vendor/firmware/spk4_fast_switch2.txt
+ vendor/firmware/spk4_fast_switch3.txt
+-vendor/firmware/wlanmdsp.otaupdate
++# vendor/firmware/wlanmdsp.otaupdate
++#   ↑ 固件里是指向 /data/vendor/firmware/wlanmdsp.mbn 的符号链接（该 mbn 运行时
++#     才由设备生成）。提取源无法解析，且此路径运行时本就可能不存在，故不打包。
+ vendor/lib64/btaudio_offload_if.so
+ vendor/lib64/carwatchdog_aidl_interface-V2-ndk_platform.so
+ vendor/lib64/ftm_fm_lib.so

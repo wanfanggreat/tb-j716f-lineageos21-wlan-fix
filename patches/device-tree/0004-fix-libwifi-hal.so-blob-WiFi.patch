@@ -1,0 +1,70 @@
+From ca00c219e7121992982e3bdd6006b2a82599e3fc Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 20:49:02 +0800
+Subject: [PATCH 4/6] =?UTF-8?q?fix:=20=E4=B8=8D=E5=86=8D=E7=94=A8=E5=8E=9F?=
+ =?UTF-8?q?=E5=8E=82=20libwifi-hal.so=20blob=20=E8=A6=86=E7=9B=96=EF=BC=88?=
+ =?UTF-8?q?WiFi=20=E6=A1=86=E6=9E=B6=E5=B1=82=E6=89=93=E4=B8=8D=E5=BC=80?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+根因（wifi HAL 反复 SIGSEGV，WiFi 开关无效）:
+原厂 vendor/lib64/libwifi-hal.so 是给 HIDL 服务
+android.hardware.wifi@1.0-service 配的，其 vendor 实现留空。我们用的是
+AIDL 服务 android.hardware.wifi-service（链接 libwifi-hal.so），
+它需要 libwifi-hal.so 内含 qcwcn 实现（由 board_wlan_device=qcwcn 经
+libwifi_hal_vendor_impl_defaults 注入）。用 blob 覆盖后函数变成空桩，
+configureChip -> getDriverVersion -> wifi_reset_passpoint_list 解引用空指针。
+
+实测符号大小（readelf -sW，B = 函数字节数）:
+  函数                       原厂 blob   源码编译版
+  wifi_get_driver_version       8 B        16 B
+  wifi_reset_passpoint_list    44 B        72 B
+
+崩溃证据（/data/tombstones/tombstone_05）:
+  signal 11 (SIGSEGV), fault addr 0x102, Cause: null pointer dereference
+  #00 libwifi-hal.so (wifi_reset_passpoint_list.cfi+28)
+  #01 android.hardware.wifi-service (WifiLegacyHal::getDriverVersion()+92)
+  #02 android.hardware.wifi-service (WifiChip::requestChipDebugInfoInternal()+116)
+  #03 android.hardware.wifi-service (WifiChip::handleChipConfiguration()+632)
+  #04 android.hardware.wifi-service (WifiChip::configureChipInternal()+204)
+  #05 android.hardware.wifi-service (WifiChip::configureChip()+80)
+框架侧表现:
+  E/WifiVendorHal: Failed to create STA iface
+  E/HalDevMgr: createIface: no chip info found
+  W/WifiHalAidlImpl: IWifi binder died.
+  E/WifiSelfRecovery: Already restarted wifi 2 times in last 1 hour. Disabling wifi
+
+改动: proprietary-files.txt 注释掉 vendor/lib64/libwifi-hal.so 一行，
+并重新生成 vendor/lenovo/p11_pro_plus/p11_pro_plus-vendor.mk。
+
+注意: 与启动崩溃（qrtr-ns，commit 2ed6d8c）是两个独立问题，互不影响。
+---
+ proprietary-files.txt | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/proprietary-files.txt b/proprietary-files.txt
+index 98f6e00..13d34dd 100644
+--- a/proprietary-files.txt
++++ b/proprietary-files.txt
+@@ -1683,7 +1683,18 @@ vendor/lib64/libkeystore-wifi-hidl.so
+ vendor/lib64/libwapi_cert.so
+ vendor/lib64/libwifi-hal-ctrl.so
+ vendor/lib64/libwifi-hal-qcom.so
+-vendor/lib64/libwifi-hal.so
++# vendor/lib64/libwifi-hal.so
++#   ↑ 不用原厂 blob。原厂那份是给 HIDL 服务 android.hardware.wifi@1.0-service 配的，
++#     vendor 实现留空（wifi_get_driver_version 仅 8 字节空桩）。我们用的是 AIDL 服务
++#     android.hardware.wifi-service，需要 libwifi-hal.so 内含 qcwcn 实现。
++#     实测（readelf -sW 符号大小）:
++#       函数                       原厂 blob   源码编译版
++#       wifi_get_driver_version       8 B        16 B
++#       wifi_reset_passpoint_list    44 B        72 B
++#     用 blob 覆盖会导致 WifiChip::configureChip -> getDriverVersion 调用空桩，
++#     在 wifi_reset_passpoint_list 处 SIGSEGV（fault addr 0x102），wifi HAL 反复崩溃、
++#     WiFi 打不开。移除本行即让 frameworks/opt/net/wifi/libwifi_hal 的编译产物进镜像，
++#     其 vendor 实现由 board_wlan_device=qcwcn 注入（BoardConfig.mk:196）。
+ vendor/lib64/vendor.qti.hardware.fstman@1.0.so
+ vendor/lib64/vendor.qti.hardware.wifi.hostapd@1.0.so
+ vendor/lib64/vendor.qti.hardware.wifi.hostapd@1.1.so

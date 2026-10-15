@@ -1,0 +1,51 @@
+From a470b93d3e1639b5928e16332a459247d70f6d9d Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 07:32:14 +0800
+Subject: [PATCH 2/6] =?UTF-8?q?p11=5Fpro=5Fplus:=20=E8=A1=A5=E9=BD=90?=
+ =?UTF-8?q?=E5=9F=BA=E7=A1=80=20WCNSS=20=E9=85=8D=E7=BD=AE=20(=E5=86=85?=
+ =?UTF-8?q?=E7=BD=AE=E9=A9=B1=E5=8A=A8=E6=89=80=E9=9C=80)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+本设备内核把 qcacld 编进内核而非模块:
+  CONFIG_QCA_CLD_WLAN=y
+此时驱动读不带 chip 名的基础路径 wlan/qca_cld/WCNSS_qcom_cfg.ini;
+而 Android.mk 的 WIFI_FIRMWARE_SYMLINKS 正是把该基础路径作为符号链接目标
+(指向 /vendor/etc/wifi/WCNSS_qcom_cfg.ini), 故该文件必须存在。
+原厂固件缺它是因为其驱动为 .ko 形式, 走 <chip>/ 子目录路径。
+
+证据 (两者字符串对比):
+  我们编出的 Image (built-in): wlan/qca_cld/WCNSS_qcom_cfg.ini
+  prebuilts 的 .ko  (模块):    wlan/qca_cld/qca6390/WCNSS_qcom_cfg.ini
+
+修复: 增加一条 PRODUCT_COPY_FILES, 用 qca6390 的配置填充基础路径。
+与内核 profile 一致 (CONFIG_QCA_CLD_WLAN_PROFILE="qca6390")。
+重建后挂载 vendor.img 验证: /vendor/etc/wifi/WCNSS_qcom_cfg.ini 存在 (9180 B)。
+---
+ device.mk | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/device.mk b/device.mk
+index ffe7731..59a5f91 100644
+--- a/device.mk
++++ b/device.mk
+@@ -372,6 +372,18 @@ PRODUCT_COPY_FILES += \
+     $(LOCAL_PATH)/wifi/WCNSS_qcom_cfg_qca6390.ini:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/qca6390/WCNSS_qcom_cfg.ini \
+     $(LOCAL_PATH)/wifi/wpa_supplicant_overlay.conf:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/wpa_supplicant_overlay.conf
+ 
++# 基础 WCNSS 配置（不带 chip 名的路径）。
++# 本设备内核把 qcacld 驱动**编进内核**（defconfig: CONFIG_QCA_CLD_WLAN=y，
++# CONFIG_QCA_CLD_WLAN_PROFILE="qca6390"），此时驱动用的是不带 chip 名的
++# 基础路径 wlan/qca_cld/WCNSS_qcom_cfg.ini（见编译产物 Image 的字符串；
++# 只有 .ko 形式的驱动才走 DYNAMIC_SINGLE_CHIP 的 <chip>/ 子目录路径）。
++# 而 device/lenovo/p11_pro_plus/Android.mk 的 WIFI_FIRMWARE_SYMLINKS 规则
++# 正是把这个基础路径作为符号链接目标，所以 /vendor/etc/wifi/WCNSS_qcom_cfg.ini
++# 必须存在。原厂固件里该文件缺失（其 zui 走 .ko 驱动），我们也未提供，
++# 会导致 WLAN 读不到配置。qca6390 与内核 profile 一致，故以其内容填充。
++PRODUCT_COPY_FILES += \
++    $(LOCAL_PATH)/wifi/WCNSS_qcom_cfg_qca6390.ini:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/WCNSS_qcom_cfg.ini
++
+ # WiFi Display
+ PRODUCT_PACKAGES += \
+     libavservices_minijail \

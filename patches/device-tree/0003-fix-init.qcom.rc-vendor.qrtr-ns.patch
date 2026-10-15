@@ -1,0 +1,61 @@
+From 32c9d56beb85033035997f5d3d084239f23e4a7d Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 19:19:06 +0800
+Subject: [PATCH 3/6] =?UTF-8?q?fix:=20=E8=A1=A5=E5=9B=9E=20init.qcom.rc=20?=
+ =?UTF-8?q?=E7=BC=BA=E5=A4=B1=E7=9A=84=20vendor.qrtr-ns=20=E6=9C=8D?=
+ =?UTF-8?q?=E5=8A=A1=E5=AE=9A=E4=B9=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+根因（WLAN 冷启动校准超时 -> cnss2 panic 重启循环）:
+本内核 net/qrtr/ 无内核态名称服务实现（Makefile 里没有 ns.o），
+cnss2 用 QMI over QRTR 查询固件的 WLFW 服务时，QRTR_TYPE_NEW_LOOKUP
+必须由用户态 qrtr-ns 应答。我们的 init.qcom.rc 副本漏掉了原厂
+（vendor 内 /etc/init/hw/init.qcom.rc:546-551）的这段服务定义，
+导致固件虽被成功加载（MHI 进 MISSION_MODE）却永远无法被内核发现：
+事件流无 SERVER_ARRIVE / REQUEST_MEM / FW_MEM_READY / FW_READY，
+最终 40s 校准超时 -> cnss_recovery_work_handler panic。
+
+真机 A/B 实验（同设备同内核，唯一变量 qrtr-ns 在不在）:
+  无 qrtr-ns: qrtr-lookup 服务列表为空；上电后无 SERVER_ARRIVE
+  有 qrtr-ns: 服务列表 22 条；上电后
+    cnss: WLFW server arriving: node 7 port 1
+    cnss: QMI WLFW service connected, state: 0x9
+    qrtr-lookup: 69 1 1 7 1 ATH10k WLAN firmware service  (0x45=WLFW)
+
+附带核实:
+- qrtr-ns 二进制与我们镜像内那份 md5 相同（3ffa07dd...），非版本问题
+- vendor_qrtr 域 (u:object_r:vendor_qrtr_exec) 与 AID 2906 均已在镜像内
+- 内核 qrtr.c:1446 允许 in_egroup_p(AID_VENDOR_QRTR) 绑定 QRTR_PORT_CTRL
+
+与内核 defconfig 的 CONFIG_QCA_CLD_WLAN=y->m 无关：该改动不必要，
+但保留（与原厂一致，且模块化更接近原厂形态）。
+---
+ rootdir/etc/init.qcom.rc | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/rootdir/etc/init.qcom.rc b/rootdir/etc/init.qcom.rc
+index 599456d..f920653 100644
+--- a/rootdir/etc/init.qcom.rc
++++ b/rootdir/etc/init.qcom.rc
+@@ -543,6 +543,19 @@ on property:vold.decrypt=trigger_restart_framework
+     start qcom-c_main-sh
+     start wcnss-service
+ 
++# WLAN 冷启动校准必需：cnss2 用 QMI over QRTR 查询固件的 WLFW 服务，
++# 本内核 net/qrtr/ 无内核态名称服务实现（无 ns.c），NEW_LOOKUP 只能由
++# 用户态 qrtr-ns 应答。缺此服务时固件加载成功但 WLFW 永不出现，
++# 事件流无 SERVER_ARRIVE -> 校准 40s 超时 -> cnss2 panic("wlan crashed")。
++# 原厂 init.qcom.rc:546-551 有同一段定义，我们的副本漏了。
++# vendor_qrtr 域与 udev 权限（AID 2906 / CAP_NET_ADMIN 绑定 QRTR_PORT_CTRL）
++# 均由 device/qcom/sepolicy_vndr legacy-um 提供，已确认在镜像内生效。
++service vendor.qrtr-ns /vendor/bin/qrtr-ns -f
++    class core
++    user vendor_qrtr
++    group vendor_qrtr
++    capabilities NET_BIND_SERVICE
++
+ service irsc_util /vendor/bin/irsc_util "/vendor/etc/sec_config"
+     class core
+     user root

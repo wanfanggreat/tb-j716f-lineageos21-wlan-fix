@@ -1,0 +1,95 @@
+From a96a4acd53956f42ae8db62d93ce932f9ec94aac Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 21:47:30 +0800
+Subject: [PATCH 5/6] =?UTF-8?q?fix:=20=E4=B8=8D=E5=86=8D=E7=94=A8=E5=8E=9F?=
+ =?UTF-8?q?=E5=8E=82=20HIDL=20blob=20=E8=A6=86=E7=9B=96=20AIDL=20=E6=9C=8D?=
+ =?UTF-8?q?=E5=8A=A1=E6=A0=88=EF=BC=88supplicant/hostapd=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+承接 3c505ad（libwifi-hal.so）。同一模式的第三处：框架的 VINTF
+manifest 声明的是 AIDL，
+  <hal format="aidl"><name>android.hardware.wifi.supplicant</name>
+    <version>3</version><fqname>ISupplicant/default</fqname>
+但 proprietary-files.txt 用原厂 HIDL 版二进制覆盖了它们。
+
+实测（设备上直接执行）:
+  $ /vendor/bin/hw/wpa_supplicant
+  CANNOT LINK EXECUTABLE "/vendor/bin/hw/wpa_supplicant":
+  library "android.hardware.wifi.supplicant@1.2.so" not found
+原厂二进制 NEEDED 里有 @1.0/@1.1/@1.2/@1.3.so 四个 HIDL 库，
+我们镜像里只有 @1.0/@1.1（AOSP 编的），故 supplicant 服务无法启动：
+  W/ServiceManagerCppClient: Waited one second for
+    android.hardware.wifi.supplicant.ISupplicant/default
+  I/servicemanager: Tried to start aidl service ... as a lazy service, but was unable to
+→ wlan0 停在 DOWN，WiFi 打不开。
+
+改动（6 项，均可被 AOSP 编译版取代）:
+  # vendor/bin/hw/wpa_supplicant      <- external/.../wpa_supplicant (AIDL v3)
+  # vendor/bin/hw/hostapd             <- external/.../hostapd
+  # vendor/bin/hostapd_cli            <- 同上
+  # vendor/bin/wpa_cli                <- 同上
+  # vendor/etc/init/android.hardware.wifi.supplicant-service.rc
+  #     <- LOCAL_INIT_RC 自动安装 AIDL 版 (interface aidl ...ISupplicant/default)
+  # vendor/etc/init/hostapd.android.rc
+  #     <- LOCAL_INIT_RC 自动安装 AIDL 版 (interface aidl ...IHostapd/default)
+
+保留（对照）: cnss-daemon、libwifi-hal-qcom、libwifi-hal-ctrl。
+device.mk:362-368 已通过 PRODUCT_PACKAGES 编译这些 AOSP 模块，无需新增配置。
+---
+ proprietary-files.txt | 33 +++++++++++++++++++++++++++------
+ 1 file changed, 27 insertions(+), 6 deletions(-)
+
+diff --git a/proprietary-files.txt b/proprietary-files.txt
+index 13d34dd..dd626c2 100644
+--- a/proprietary-files.txt
++++ b/proprietary-files.txt
+@@ -1664,12 +1664,28 @@ system_ext/lib/vendor.qti.hardware.wigig.supptunnel@1.0.so
+ system_ext/lib64/vendor.qti.hardware.wifi.keystore@1.0.so
+ system_ext/lib64/vendor.qti.hardware.wigig.netperftuner@1.0.so
+ system_ext/lib64/vendor.qti.hardware.wigig.supptunnel@1.0.so
+-vendor/bin/hw/hostapd
+-vendor/bin/hw/wpa_supplicant
++# vendor/bin/hw/hostapd
++# vendor/bin/hw/wpa_supplicant
++# vendor/bin/hostapd_cli
++#   ↑ 不用原厂 blob。这三个是 HIDL 时代二进制（wpa_supplicant 依赖
++#     android.hardware.wifi.supplicant@1.2.so / @1.3.so 这些 HIDL 库，
++#     我们的镜像里没有），实测直接执行报：
++#       CANNOT LINK EXECUTABLE "/vendor/bin/hw/wpa_supplicant":
++#       library "android.hardware.wifi.supplicant@1.2.so" not found
++#     而框架的 VINTF manifest 声明的是 AIDL：
++#       <hal format="aidl"><name>android.hardware.wifi.supplicant</name>
++#         <version>3</version><fqname>ISupplicant/default</fqname>
++#     设备树 device.mk:362-368 已通过 PRODUCT_PACKAGES 编译 AOSP 的
++#     hostapd / wpa_supplicant（external/wpa_supplicant_8，AIDL v3）。
++#     与 libwifi-hal.so 是同一类问题：blob 覆盖 AIDL 服务栈。
+ vendor/bin/cnss-daemon
+-vendor/bin/hostapd_cli
+-vendor/bin/wpa_cli
+-vendor/etc/init/android.hardware.wifi.supplicant-service.rc
++# vendor/bin/wpa_cli
++# vendor/etc/init/android.hardware.wifi.supplicant-service.rc
++#   ↑ 同理：原厂这份 rc 声明的是 HIDL interface
++#     (android.hardware.wifi.supplicant@1.0::ISupplicant 等)，
++#     AOSP 的 AIDL 版 (external/wpa_supplicant_8/wpa_supplicant/aidl/
++#     android.hardware.wifi.supplicant-service.rc) 由 wpa_supplicant 模块的
++#     LOCAL_INIT_RC 自动安装到同一路径，声明 `interface aidl ...ISupplicant/default`。
+ vendor/etc/init/vendor.qti.hardware.fstman@1.0-service.rc
+ vendor/etc/init/vendor.qti.hardware.wifi.wifilearner@1.0-service.rc
+ vendor/etc/init/vendor.qti.hardware.wigig.supptunnel@1.0-service.rc
+@@ -1962,7 +1978,12 @@ vendor/etc/init/boringssl_self_test.rc
+ vendor/etc/init/factorybsp_service.rc
+ vendor/etc/init/factorybsp_service_qcom.rc
+ vendor/etc/init/feature_enabler_client.rc
+-vendor/etc/init/hostapd.android.rc
++# vendor/etc/init/hostapd.android.rc
++#   ↑ 同理：原厂这份声明 HIDL interface
++#     (android.hardware.wifi.hostapd@1.0::IHostapd 等)，AOSP 的 AIDL 版
++#     (external/wpa_supplicant_8/hostapd/hostapd.android.rc，声明
++#     `interface aidl android.hardware.wifi.hostapd.IHostapd/default`)
++#     由 hostapd 模块的 LOCAL_INIT_RC 自动安装到同一路径。
+ vendor/etc/init/init.qti.display_boot.rc
+ vendor/etc/init/init.qti.fm.rc
+ vendor/etc/init/init.qti.media.rc

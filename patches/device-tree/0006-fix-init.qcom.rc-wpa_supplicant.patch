@@ -1,0 +1,101 @@
+From a49600ae0d679e62477de52eb27b78ba39b4a3d9 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 22:34:55 +0800
+Subject: [PATCH 6/6] =?UTF-8?q?fix:=20=E7=A7=BB=E9=99=A4=20init.qcom.rc=20?=
+ =?UTF-8?q?=E9=87=8C=E7=AC=AC=E4=BA=8C=E4=BB=BD=20wpa=5Fsupplicant=20?=
+ =?UTF-8?q?=E5=AE=9A=E4=B9=89=EF=BC=88=E5=90=8C=E5=90=8D=E5=86=B2=E7=AA=81?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+根因（supplicant 不被拉起，wlan0 停在 DOWN）:
+init.qcom.rc:570-587 保留了原厂 HIDL 时代的
+  service wpa_supplicant /vendor/bin/hw/wpa_supplicant ...
+      interface android.hardware.wifi.supplicant@1.0::ISupplicant default
+      ... (@1.1/@1.2/@1.3 + vendor.qti...@2.0/2.1/2.2)
+      socket vendor_wpa_wlan0 ...
+它与 AOSP 的 AIDL 定义同名（后者由
+external/wpa_supplicant_8/wpa_supplicant/aidl/android.hardware.wifi.supplicant-service.rc
+经 LOCAL_INIT_RC 安装到 /vendor/etc/init/），声明
+      interface aidl android.hardware.wifi.supplicant.ISupplicant/default
+
+init 的 ServiceParser::ParseInterface 对重复 interface 报错
+  "Interface '<name>' redefined in <svc> but is already defined by <svc>"
+于是 AIDL interface 未被注册，servicemanager 请求 lazy 启动时 init 找不到：
+
+  init: Control message: Could not find
+    'aidl/android.hardware.wifi.supplicant.ISupplicant/default'
+    for ctl.interface_start from pid: 642 (/system/bin/servicemanager)
+  W/ServiceManagerCppClient: Waited one second for
+    android.hardware.wifi.supplicant.ISupplicant/default
+  W/libc: Unable to set property "ctl.interface_start" ...: error code: 0x20
+
+反证：`setprop ctl.start wpa_supplicant` 能成功（服务名存在），
+只有 interface 路径失效——正是 interface 注册被丢弃的症状。
+手动启动后 `cmd wifi status` 立刻变为 "Wifi is enabled"。
+
+改动：注释掉该重复定义，交由 AOSP 的 rc 提供唯一权威定义。
+保留 `service hostapd_fst`（服务名不同，不冲突）与
+`service vendor.wigig_supplicant`（wigig 专用，未受影响）。
+---
+ rootdir/etc/init.qcom.rc | 46 ++++++++++++++++++++++++----------------
+ 1 file changed, 28 insertions(+), 18 deletions(-)
+
+diff --git a/rootdir/etc/init.qcom.rc b/rootdir/etc/init.qcom.rc
+index f920653..9fc033f 100644
+--- a/rootdir/etc/init.qcom.rc
++++ b/rootdir/etc/init.qcom.rc
+@@ -567,24 +567,34 @@ service qmiproxy /system/bin/qmiproxy
+     group radio diag
+     disabled
+ 
+-service wpa_supplicant /vendor/bin/hw/wpa_supplicant \
+-    -O/data/vendor/wifi/wpa/sockets -puse_p2p_group_interface=1 -dd \
+-    -g@android:vendor_wpa_wlan0
+-#   we will start as root and wpa_supplicant will switch to user wifi
+-#   after setting up the capabilities required for WEXT
+-#   user wifi
+-#   group wifi inet keystore
+-    interface android.hardware.wifi.supplicant@1.0::ISupplicant default
+-    interface android.hardware.wifi.supplicant@1.1::ISupplicant default
+-    interface android.hardware.wifi.supplicant@1.2::ISupplicant default
+-    interface android.hardware.wifi.supplicant@1.3::ISupplicant default
+-    interface vendor.qti.hardware.wifi.supplicant@2.0::ISupplicantVendor default
+-    interface vendor.qti.hardware.wifi.supplicant@2.1::ISupplicantVendor default
+-    interface vendor.qti.hardware.wifi.supplicant@2.2::ISupplicantVendor default
+-    class main
+-    socket vendor_wpa_wlan0 dgram 660 wifi wifi
+-    disabled
+-    oneshot
++# 原厂在此定义了第二份 `service wpa_supplicant`（HIDL 时代内容：
++#   interface android.hardware.wifi.supplicant@1.0::ISupplicant default ...），
++# 与 AOSP 的 AIDL 定义（external/wpa_supplicant_8/wpa_supplicant/aidl/
++# android.hardware.wifi.supplicant-service.rc，声明
++#   interface aidl android.hardware.wifi.supplicant.ISupplicant/default）**同名冲突**。
++# init 的 ServiceParser::ParseInterface 对重复 interface 报
++#   "Interface '<name>' redefined in <svc> but is already defined by <svc>"
++# 导致 AIDL interface 注册失败，servicemanager 报：
++#   init: Control message: Could not find
++#     'aidl/android.hardware.wifi.supplicant.ISupplicant/default'
++#     for ctl.interface_start from pid: 642 (/system/bin/servicemanager)
++# → supplicant 不作为 lazy AIDL 服务被拉起，wlan0 停在 DOWN。
++# 故此处不再定义，交由 AOSP 的 rc 提供唯一权威定义。
++#
++# service wpa_supplicant /vendor/bin/hw/wpa_supplicant \
++#     -O/data/vendor/wifi/wpa/sockets -puse_p2p_group_interface=1 -dd \
++#     -g@android:vendor_wpa_wlan0
++#     interface android.hardware.wifi.supplicant@1.0::ISupplicant default
++#     interface android.hardware.wifi.supplicant@1.1::ISupplicant default
++#     interface android.hardware.wifi.supplicant@1.2::ISupplicant default
++#     interface android.hardware.wifi.supplicant@1.3::ISupplicant default
++#     interface vendor.qti.hardware.wifi.supplicant@2.0::ISupplicantVendor default
++#     interface vendor.qti.hardware.wifi.supplicant@2.1::ISupplicantVendor default
++#     interface vendor.qti.hardware.wifi.supplicant@2.2::ISupplicantVendor default
++#     class main
++#     socket vendor_wpa_wlan0 dgram 660 wifi wifi
++#     disabled
++#     oneshot
+ 
+ service vendor.wigig_supplicant /vendor/bin/hw/wpa_supplicant \
+     -iwigig0 -Dnl80211 -c/data/vendor/wifi/wigig_supplicant.conf \
