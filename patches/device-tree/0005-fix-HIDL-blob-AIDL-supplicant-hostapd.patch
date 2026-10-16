@@ -1,7 +1,7 @@
 From a96a4acd53956f42ae8db62d93ce932f9ec94aac Mon Sep 17 00:00:00 2001
 From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 21:47:30 +0800
-Subject: [PATCH 5/6] =?UTF-8?q?fix:=20=E4=B8=8D=E5=86=8D=E7=94=A8=E5=8E=9F?=
+Subject: [PATCH 5/7] =?UTF-8?q?fix:=20=E4=B8=8D=E5=86=8D=E7=94=A8=E5=8E=9F?=
  =?UTF-8?q?=E5=8E=82=20HIDL=20blob=20=E8=A6=86=E7=9B=96=20AIDL=20=E6=9C=8D?=
  =?UTF-8?q?=E5=8A=A1=E6=A0=88=EF=BC=88supplicant/hostapd=EF=BC=89?=
 MIME-Version: 1.0

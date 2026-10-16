@@ -1,20 +1,24 @@
-# Lenovo TB-J716F (p11_pro_plus) — LineageOS 21 WLAN 修复
+# Lenovo TB-J716F (p11_pro_plus) — LineageOS 21 修复集
 
 联想小新 Pad Pro 2021（TB-J716F / 代号 `p11_pro_plus`，Snapdragon 870 / SM8250-AC）
-在 LineageOS 21（Android 14）上 WLAN 完全不可用，并伴随**开机 panic 重启循环**。
+在 LineageOS 21（Android 14）上的移植修复记录：**WLAN、传感器栈、音频**。
 
-本仓库包含完整的排查过程与修复所需的全部源码改动。
+本仓库包含完整的排查过程与修复所需的全部源码改动（补丁形式）。
 
-> **状态：四个缺陷已全部修复，并经真机验证。**
-> 设备稳定运行、`wpa_supplicant` 自启动、WiFi 可扫描到 AP。
-> 目标读者：为同一台设备（或其他 SM8250 + QCA6390 设备）编译 LineageOS 的开发者。
+> **状态：全部缺陷已修复并经真机验证。**
+> 设备稳定运行、WiFi 可扫描到 AP、45 个传感器全部在位、声卡已注册、
+> 12 个 HAL 服务全 running。
+> 目标读者：为同一台设备（或其他 SM8250 设备）编译 LineageOS 的开发者。
 
 ---
 
-## 问题全貌：四个独立缺陷
+## 问题全貌
 
-表面上都是"WiFi 不工作"，实际是四个**互不相同**的缺陷依次暴露——
-每修好一个，下一个才浮现。
+表面现象各不相同，实际可分为几组**互相独立**的缺陷。
+其中一条贯穿始终的线索是：**用原厂 blob 覆盖自编 AOSP 组件，导致 ABI 或
+HAL 接口版本（HIDL vs AIDL）不匹配**。
+
+### 第一组：WLAN（4 个缺陷）
 
 | # | 缺陷 | 层次 | 症状 | 提交 |
 |---|---|---|---|---|
@@ -26,6 +30,40 @@
 缺陷 2/3/4 是**同一错误模式的三种表现**：用原厂 blob（或原厂 rc 定义）
 覆盖了我们自编的 AOSP 组件，而原厂组件与框架声明的 HAL 接口
 **版本/传输方式不匹配**（HIDL vs AIDL）。
+
+### 第二组：传感器 + 音频（3 个缺陷）
+
+| # | 缺陷 | 层次 | 症状 | 提交 |
+|---|---|---|---|---|
+| 5 | 传感器栈缺失（SSC blob 未打包） | HAL | `dumpsys sensorservice` 报 **No Sensors on the device** | `22cfba36` |
+| 6 | VINTF 重复声明同一 sensors HAL | VINTF | **卡第一屏**（无开机动画，无 panic） | `22cfba36` |
+| 7 | 内核 DAI 链引用不存在的 wsa-macro | 内核音频 | `/proc/asound/cards` 为空，**无声卡** | `8b250d7d` |
+| 8 | 原厂 `libssrec.so` 与重建 HAL 的 ABI 不匹配 | HAL | audioserver **崩溃循环**，卡开机动画 | `22cfba36` |
+| 9 | 跳过 WSA 链路时漏掉 `msm_int_audrx_init` | 内核音频 | **麦克风采集失效**（录音是静音），上一修复引入的回归 | `b8e1bed9` |
+
+缺陷 6 是个高频陷阱，值得单独记住：**AOSP 模块自带的 VINTF fragment
+不能又在 `manifest.xml` 里手写一遍**，否则 libvintf 判定 `Conflicting FqInstance`，
+整个 vendor manifest 解析失败。而且它**卡在第一屏、pstore 却是空的**——
+用"有没有内核 panic"来区分根因在这里会失效。
+
+缺陷 8 与 WLAN 那组同源：原厂 blob 与本树重建的 HAL 共享结构体定义时
+就有 ABI 风险。**判断手法**：tombstone backtrace 里出现
+`/vendor/lib/*.so`（原厂 blob）与 `/vendor/lib/hw/*.so`（重建 HAL）交替，
+优先怀疑 ABI 而非逻辑 bug。
+
+### 最终验证结果（真机实测）
+
+```
+sys.boot_completed                        1
+dumpsys sensorservice                     Total 45 h/w sensors, 45 running
+/proc/asound/cards                        kona-mtp-snd-card
+audio 输出                                framesWritten:292800（音频真的流过声卡）
+audio 输入设备                             Built-In Mic / Built-In Back Mic / Telephony Rx
+HAL 服务                                  12 个全 running，init.svc.*restarting 计数 0
+pm list features                          89 项
+cmd wifi list-scan-results                可扫描到 AP
+uptime                                    越过历史 panic 点（126s），无重启
+```
 
 ---
 
@@ -214,19 +252,23 @@ $ uptime                                     217s+（历史 panic 点在 126s）
 
 ```
 patches/
-  device-tree/          设备树仓库的 6 个提交
+  device-tree/          设备树仓库的 7 个提交
     0001  修复 wlan 固件符号链导致的 vendorimage 缺源
     0002  补齐基础 WCNSS 配置（内置驱动所需）
     0003  补回 init.qcom.rc 缺失的 vendor.qrtr-ns 服务定义      ← 缺陷 1
     0004  不再用原厂 libwifi-hal.so blob 覆盖                   ← 缺陷 2
     0005  不再用原厂 HIDL blob 覆盖 AIDL 服务栈（supplicant/hostapd） ← 缺陷 3
     0006  移除 init.qcom.rc 里第二份 wpa_supplicant 定义        ← 缺陷 4
-  kernel/               内核仓库的 1 个提交
+    0007  补齐 SSC 传感器栈、修开机卡首屏与无声卡               ← 缺陷 5/6/8
+  kernel/               内核仓库的 3 个提交
     0001  kona-perf: WLAN 驱动改为模块构建
+    0002  kona 声卡不再挂载 wsa_macro DAI，并修 mic-bias 电压属性 ← 缺陷 7
+    0003  麦克风采集失效：msm_int_audrx_init 从 WSA 链路迁到 RX 链路 ← 缺陷 9
 docs/
-  fix-report-final.md       完整修复报告（四个缺陷 + 真机验证，推荐先读）
-  fix-verification.md       排查过程记录（含中间阶段的试错与更正）
-  rootcause-wlan-panic.md   早期根因分析（缺陷 1，含已排除的假设）
+  fix-report-final.md         WLAN 完整修复报告（缺陷 1~4 + 真机验证）
+  fix-report-sensors-audio.md 传感器/音频修复报告（缺陷 5~9 + 真机验证，推荐先读）
+  fix-verification.md         WLAN 排查过程记录（含中间阶段的试错与更正）
+  rootcause-wlan-panic.md     WLAN 早期根因分析（缺陷 1，含已排除的假设）
 tools/
   collect-evidence.sh       崩溃循环中抢抓 pstore / dmesg / logcat 证据
   verify-boot.sh            刷入后验证：是否越过 panic 点、wlan0 是否出现
@@ -297,14 +339,34 @@ fastboot reboot
 ### 验证
 
 ```bash
-adb shell 'getprop init.svc.vendor.qrtr-ns'     # running
-adb shell 'getprop init.svc.wpa_supplicant'     # running
-adb shell 'ls /sys/class/net/ | grep wlan'      # wlan0 存在
-adb shell 'ls /vendor/lib/modules/qca_cld3*'    # 模块就位
-adb shell 'dmesg | grep SERVER_ARRIVE'          # 事件流完整
-adb shell 'cmd wifi list-scan-results'          # 能扫到 AP
-# 关键：开机 3 分钟以上不 panic
+# 启动
+adb shell getprop sys.boot_completed                # 1
+adb shell 'getprop | grep restarting'               # 应为空（无服务崩溃循环）
+
+# WLAN
+adb shell 'getprop init.svc.vendor.qrtr-ns'         # running
+adb shell 'getprop init.svc.wpa_supplicant'         # running
+adb shell 'ls /sys/class/net/ | grep wlan'          # wlan0 存在
+adb shell 'ls /vendor/lib/modules/qca_cld3*'        # 模块就位
+adb shell 'dmesg | grep SERVER_ARRIVE'              # 事件流完整
+adb shell 'cmd wifi list-scan-results'              # 能扫到 AP
+
+# 传感器
+adb shell dumpsys sensorservice | grep 'h/w sensors'  # Total 45 ... 45 running
+
+# 音频
+adb shell 'cat /proc/asound/cards'                  # kona-mtp-snd-card
+adb shell 'dmesg | grep -E "skip wsa_macro|Sound card .* registered"'
+# 麦克风：录音后确认不是静音（缺陷 9 的症状是"能生成 .m4a 但内容静音"）
+
+# VINTF 合法性（在主机上对镜像做，比刷机快得多）
+sudo mount -o ro,loop out/target/product/p11_pro_plus/vendor.img /tmp/vnew
+out/host/linux-x86/bin/checkvintf --check-one --dirmap /vendor:/tmp/vnew
+sudo umount /tmp/vnew
+# 期望：Successfully processed VINTF information
 ```
+
+> **关键：开机 3 分钟以上不 panic 且无 `init.svc.*restarting`。**
 
 ---
 
@@ -330,19 +392,30 @@ adb shell 'cat /sys/fs/pstore/console-ramoops-0'   # 上次崩溃的完整日志
 - **`repo status` 在 detached HEAD 的树上会漏报本地提交**——
   它只检查工作区文件差异。要查"我改过什么"应使用：
   `git rev-list HEAD --not --remotes`
+- **"卡开机画面"未必是内核 panic。** 缺陷 6/8 都是卡屏但 pstore 为空——
+  分别是 VINTF 解析失败和 HAL 崩溃循环。必须靠 logcat 区分现象相近的问题。
+- **VINTF 冲突可在主机上先验。** 用 `checkvintf --check-one --dirmap`
+  对 `vendor.img` 做静态检查，比刷机排查快得多（见上方验证一节）。
+- **vendor 镜像内空间极小时，`debugfs` 可直接原地修改**。用
+  `mount -o loop,rw` 会因日志分配报 `ENOSPC`，而 `debugfs` 不会——
+  这能大幅加快 VINTF 这类只涉及 vendor 的迭代验证（改完只刷 vendor 分区）。
 
 ---
 
 ## 适用范围与已知限制
 
-- 针对 **TB-J716F / p11_pro_plus**（QCA6390）验证。其他 SM8250 设备可能有
-  类似问题，但路径与包名不同，需自行核对。
+- 针对 **TB-J716F / p11_pro_plus**（QCA6390 + CS35L41 功放）验证。
+  其他 SM8250 设备可能有类似问题，但路径与包名不同，需自行核对。
 - 缺陷 1 的初诊曾误判为内核 defconfig 问题（`CONFIG_QCA_CLD_WLAN=y`），
   已用 A/B 实验更正；`=m` 的改动保留（与原厂形态一致），但**它不是
   崩溃的修复手段**。详见 `docs/fix-report-final.md` 第六节。
+- **缺陷 9 是缺陷 7 引入的回归**（跳过 WSA 链路时漏掉挂在链路 0 上的
+  `.init` 回调，导致 mixer 控件缺失、麦克风静音）。两个补丁需一并应用。
 - 无线投屏（`wifidisplayhalservice`）另有独立问题（缺 `libpng.so`），
   不在本仓库范围。
-- 未实测实际联网（需在 UI 输入密码），仅验证到可扫描 AP。
+- 未做的功能级验证：实际联网（需在 UI 输入密码）、相机拍照、GNSS 定位。
+  已验证到「服务 running + provider 在位 + 能扫描到 AP」这一层。
+- `AudioFX` 服务存在 NPE，不影响开机与音频播放，属 LineageOS 侧组件问题。
 
 ## 许可
 

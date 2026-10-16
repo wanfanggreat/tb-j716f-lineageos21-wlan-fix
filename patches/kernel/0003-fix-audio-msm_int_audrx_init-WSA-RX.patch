@@ -1,0 +1,90 @@
+From b8e1bed986064c7036adf5e33387d3ae8081d524 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 12:40:51 +0800
+Subject: [PATCH 3/3] =?UTF-8?q?fix(audio):=20=E9=BA=A6=E5=85=8B=E9=A3=8E?=
+ =?UTF-8?q?=E9=87=87=E9=9B=86=E5=A4=B1=E6=95=88=20=E2=80=94=E2=80=94=20?=
+ =?UTF-8?q?=E6=8A=8A=20msm=5Fint=5Faudrx=5Finit=20=E4=BB=8E=20WSA=20?=
+ =?UTF-8?q?=E9=93=BE=E8=B7=AF=E8=BF=81=E5=88=B0=20RX=20=E9=93=BE=E8=B7=AF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+问题（batch7 回归，我上一提交引入）
+----------------------------------
+batch7 让 populate_snd_card_dailinks() 在 qcom,wsa-max-devs == 0 时跳过
+msm_wsa_cdc_dma_be_dai_links[]，解决了「wsa_macro codec DAI 未注册导致整张
+声卡永远 -EPROBE_DEFER」。但漏掉一点：数组的第 0 条
+（WSA CDC DMA0 Playback）挂着 .init = &msm_int_audrx_init，
+而该回调负责往 bolero_codec 注册 msm_int_snd_controls[]
+（含 "TX_CDC_DMA_TX_3 SampleRate/Channels/Format"）、
+msm_common_snd_controls[]、DAPM widget、port map 与 codec debugfs 节点。
+
+跳过该链路 = 这些 mixer 控件全部不存在，于是：
+
+  audio HAL: platform_set_codec_backend_cfg()
+             → mixer_get_ctl_by_name("TX_CDC_DMA_TX_3 SampleRate") 返回 NULL
+             → 返回 -EINVAL
+  audio HAL: start_input_stream: pcm_prepare returned -1
+  kernel   : __afe_port_start: AFE enable for port 0xb037 failed -22
+             msm-dai-cdc-dma-dev ... fail to open AFE port 0xb037
+             TX_CDC_DMA_TX_3: ASoC: backend prepare failed -22
+             msm_pcm_capture_prepare: stream reg failed ret:-22
+
+→ 任何走 TX_CDC_DMA_TX_3 的采集（内置麦克风/录音/相机录像收音）全部失败。
+   录音机能生成 .m4a，但内容是静音（AAC 熵 0.43，每帧恒 195 字节）。
+   播放不受影响（RX 侧无任何 AFE 失败）。
+
+证据
+----
+- 设备上 /sys/kernel/debug/asoc/kona-mtp-snd-card/ 里没有 WSA CDC DMA 链路
+- logcat: "Could not get ctl for mixer command - TX_CDC_DMA_TX_3 SampleRate" ×160
+- dmesg : afe_get_cal_topology_id acdb_id=4 → afe_find_cal "cal block is a
+          match, size is 0" → send_afe_cal_type ret -22
+          （ACDB 里 acdb_id=4 在该拓扑下没有校准块，因为采样率从未被设置）
+- 校准数据本身与原厂一致：7 个 MTP_*.acdb 逐字节 md5 相同
+
+修复
+----
+WSA 组被跳过时，把 msm_int_audrx_init 改挂到紧随其后的
+msm_rx_tx_cdc_dma_be_dai_links[0]（RX_CDC_DMA_RX_0 Playback，
+codec DAI 为常驻的 rx_macro_rx1，必然 probe 成功）。
+两种路径下 msm_int_audrx_init 都恰好被调用一次，
+不会重复注册控件（ASoC 会拒绝重名控件）。
+
+验证
+----
+make techpack/audio/asoc/machine_dlkm.ko 编译通过，
+llvm-nm 确认 msm_int_audrx_init 仍被链接进 machine_dlkm.ko。
+---
+ techpack/audio/asoc/kona.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/techpack/audio/asoc/kona.c b/techpack/audio/asoc/kona.c
+index d3e894b85..27d36f07b 100644
+--- a/techpack/audio/asoc/kona.c
++++ b/techpack/audio/asoc/kona.c
+@@ -7703,6 +7703,24 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
+ 		memcpy(msm_kona_dai_links + total_links,
+ 		       msm_rx_tx_cdc_dma_be_dai_links,
+ 		       sizeof(msm_rx_tx_cdc_dma_be_dai_links));
++		if (wsa_max_devs == 0) {
++			/* msm_int_audrx_init 原本挂在
++			 * msm_wsa_cdc_dma_be_dai_links[0]（WSA CDC DMA0
++			 * Playback）的 .init 上，负责往 bolero_codec 注册
++			 * msm_int_snd_controls[]——包含
++			 * "TX_CDC_DMA_TX_3 SampleRate/Channels/Format"
++			 * 以及 DAPM widget、port map、codec debugfs。
++			 * WSA 组被跳过时若不同时把 init 搬走，这些控件就
++			 * 全部不存在：HAL 取 mixer 控件
++			 * "TX_CDC_DMA_TX_3 SampleRate" 失败 →
++			 * platform_set_codec_backend_cfg 返回 -EINVAL →
++			 * pcm_prepare 失败 → AFE port 0xb037 打不开
++			 * (ADSP_EBADPARAM) → 麦克风采集全挂（录音静音）。
++			 * 故改挂到同样常驻、codec DAI 为 rx_macro_rx1
++			 * 的 RX_CDC_DMA_RX_0 链路上。 */
++			msm_kona_dai_links[total_links].init =
++							&msm_int_audrx_init;
++		}
+ 		total_links +=
+ 			ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links);
+ 

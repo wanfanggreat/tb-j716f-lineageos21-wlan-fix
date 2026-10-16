@@ -1,0 +1,249 @@
+From 8b250d7d1d39ec7fef6c839cfb8bf55d0000d4f6 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 11:33:44 +0800
+Subject: [PATCH 2/3] =?UTF-8?q?fix(audio):=20kona=20=E5=A3=B0=E5=8D=A1?=
+ =?UTF-8?q?=E4=B8=8D=E5=86=8D=E6=8C=82=E8=BD=BD=20wsa=5Fmacro=20DAI?=
+ =?UTF-8?q?=EF=BC=8C=E5=B9=B6=E4=BF=AE=20mic-bias=20=E7=94=B5=E5=8E=8B?=
+ =?UTF-8?q?=E5=B1=9E=E6=80=A7?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1) techpack/audio/asoc/kona.c：populate_snd_card_dailinks() 里
+   msm_bolero_fe_dai_links[] 与 msm_wsa_cdc_dma_be_dai_links[] 的
+   codec DAI 全部由 bolero-cdc/wsa-macro 提供：
+     wsa_macro_vifeedback / wsa_macro_rx1 / wsa_macro_rx_mix / wsa_macro_echo
+   本平台 DT 的 wsa-macro@3240000 节点没有 compatible 属性
+   （原厂 dtb 亦如此，已用 dtc 对比确认），且 qcom,wsa-max-devs = <0>，
+   该 macro 永不 probe → 这些 codec DAI 永不注册 →
+   snd_soc_register_card() 永远返回 -EPROBE_DEFER → 无任何声卡。
+   真机 dmesg 证据（修复前）：
+     ASoC: CODEC DAI wsa_macro_vifeedback not registered
+     platform ...:sound: deferred probe pending
+     ASoC: CODEC DAI wsa_macro_rx1 not registered
+   改为仅在 qcom,wsa-max-devs > 0（确实存在 WSA 设备）时才挂这两组链路。
+
+2) arch/arm64/boot/dts/vendor/lenovo/*.dts（10 个机型）：
+   qcom,cdc-vdd-mic-bias-voltage 原写作 "\02K\0\02K"，八进制转义只产生
+   6 字节，而 wcd938x 驱动按数组读 2 个 u32（需 8 字节）→ 属性解析错位。
+   改为正确的 <0x00324b00 0x00324b00>（= 3296000uV）。
+   注意：实际生效的是预编译 dtbo，设备树侧的修正用于保持一致；
+   二进制补丁见 device/lenovo/p11_pro_plus/prebuilts/dtbo*.img。
+---
+ .../arm64/boot/dts/vendor/lenovo/kona_CDP.dts |  2 +-
+ .../boot/dts/vendor/lenovo/kona_CDP_LCD.dts   |  2 +-
+ .../arm64/boot/dts/vendor/lenovo/kona_HDK.dts |  2 +-
+ .../arm64/boot/dts/vendor/lenovo/kona_MTP.dts |  2 +-
+ .../boot/dts/vendor/lenovo/kona_MTP_WS.dts    |  2 +-
+ .../arm64/boot/dts/vendor/lenovo/kona_QRD.dts |  2 +-
+ .../dts/vendor/lenovo/kona_XR_5G_Fusion.dts   |  2 +-
+ .../vendor/lenovo/kona_XR_5G_UltraSound.dts   |  2 +-
+ .../dts/vendor/lenovo/kona_XR_Standalone.dts  |  2 +-
+ .../lenovo/kona_lenovo_p11_pro_plus.dts       |  2 +-
+ techpack/audio/asoc/kona.c                    | 44 ++++++++++++++-----
+ 11 files changed, 44 insertions(+), 20 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_CDP.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_CDP.dts
+index ca1487113..9a6987422 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_CDP.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_CDP.dts
+@@ -8123,7 +8123,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_CDP_LCD.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_CDP_LCD.dts
+index d5bb4ade1..78242979d 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_CDP_LCD.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_CDP_LCD.dts
+@@ -8183,7 +8183,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_HDK.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_HDK.dts
+index 0bd361f13..1c0b2da3b 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_HDK.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_HDK.dts
+@@ -8078,7 +8078,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_MTP.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_MTP.dts
+index 2b9c2dc79..a3f52b3f5 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_MTP.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_MTP.dts
+@@ -7785,7 +7785,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_MTP_WS.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_MTP_WS.dts
+index 3acdba786..93ade6973 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_MTP_WS.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_MTP_WS.dts
+@@ -7785,7 +7785,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_QRD.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_QRD.dts
+index 6f45cffc1..880241a69 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_QRD.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_QRD.dts
+@@ -8064,7 +8064,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_Fusion.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_Fusion.dts
+index e2edc42b8..740e5003e 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_Fusion.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_Fusion.dts
+@@ -7449,7 +7449,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_UltraSound.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_UltraSound.dts
+index a129bf7c5..07857d29f 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_UltraSound.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_XR_5G_UltraSound.dts
+@@ -7449,7 +7449,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_XR_Standalone.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_XR_Standalone.dts
+index a74250a35..597980835 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_XR_Standalone.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_XR_Standalone.dts
+@@ -7413,7 +7413,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/arch/arm64/boot/dts/vendor/lenovo/kona_lenovo_p11_pro_plus.dts b/arch/arm64/boot/dts/vendor/lenovo/kona_lenovo_p11_pro_plus.dts
+index a1881dab4..a942e1caf 100644
+--- a/arch/arm64/boot/dts/vendor/lenovo/kona_lenovo_p11_pro_plus.dts
++++ b/arch/arm64/boot/dts/vendor/lenovo/kona_lenovo_p11_pro_plus.dts
+@@ -7785,7 +7785,7 @@
+ 				qcom,cdc-vdd-buck-voltage = <0x1b7740 0x1b7740>;
+ 				qcom,cdc-vdd-buck-current = <0x9eb10>;
+ 				cdc-vdd-mic-bias-supply = <0xffffffff>;
+-				qcom,cdc-vdd-mic-bias-voltage = "\02K\0\02K";
++				qcom,cdc-vdd-mic-bias-voltage = <0x00324b00 0x00324b00>;
+ 				qcom,cdc-vdd-mic-bias-current = <0x7530>;
+ 				qcom,cdc-micbias1-mv = <0x708>;
+ 				qcom,cdc-micbias2-mv = <0xa8c>;
+diff --git a/techpack/audio/asoc/kona.c b/techpack/audio/asoc/kona.c
+index f5d0ea8ee..d3e894b85 100644
+--- a/techpack/audio/asoc/kona.c
++++ b/techpack/audio/asoc/kona.c
+@@ -7637,6 +7637,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
+ 	u32 auxpcm_audio_intf = 0;
+ 	u32 val = 0;
+ 	u32 wcn_btfm_intf = 0;
++	u32 wsa_max_devs = 0;
+ 	const struct of_device_id *match;
+ 
+ 	match = of_match_node(kona_asoc_machine_of_match, dev->of_node);
+@@ -7649,16 +7650,32 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
+ 	if (!strcmp(match->data, "codec")) {
+ 		card = &snd_soc_card_kona_msm;
+ 
++		/* msm_bolero_fe_dai_links[] 里唯一一条是 wsa_macro_vifeedback
++		 * 反馈通路（扬声器保护），它依赖 bolero-cdc/wsa-macro 驱动。
++		 * 本平台 DT 里 wsa-macro@3240000 节点没有 compatible（原厂
++		 * DTB 亦如此），且 qcom,wsa-max-devs = 0，wsa_macro 从不 probe，
++		 * 这条 codec DAI 永不注册 → snd_soc_register_card() 永远
++		 * -EPROBE_DEFER → 无任何声卡（/proc/asound/cards 为空）。
++		 * 因此仅在真正存在 WSA 设备时才挂这条链路。 */
++		of_property_read_u32(dev->of_node, "qcom,wsa-max-devs",
++				     &wsa_max_devs);
++
+ 		memcpy(msm_kona_dai_links + total_links,
+ 		       msm_common_dai_links,
+ 		       sizeof(msm_common_dai_links));
+ 		total_links += ARRAY_SIZE(msm_common_dai_links);
+ 
+-		memcpy(msm_kona_dai_links + total_links,
+-		       msm_bolero_fe_dai_links,
+-		       sizeof(msm_bolero_fe_dai_links));
+-		total_links +=
+-			ARRAY_SIZE(msm_bolero_fe_dai_links);
++		if (wsa_max_devs > 0) {
++			memcpy(msm_kona_dai_links + total_links,
++			       msm_bolero_fe_dai_links,
++			       sizeof(msm_bolero_fe_dai_links));
++			total_links +=
++				ARRAY_SIZE(msm_bolero_fe_dai_links);
++		} else {
++			dev_info(dev,
++				 "%s: wsa-max-devs=0, skip wsa_macro vifeedback link\n",
++				 __func__);
++		}
+ 
+ 		memcpy(msm_kona_dai_links + total_links,
+ 		       msm_common_misc_fe_dai_links,
+@@ -7670,11 +7687,18 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
+ 		       sizeof(msm_common_be_dai_links));
+ 		total_links += ARRAY_SIZE(msm_common_be_dai_links);
+ 
+-		memcpy(msm_kona_dai_links + total_links,
+-		       msm_wsa_cdc_dma_be_dai_links,
+-		       sizeof(msm_wsa_cdc_dma_be_dai_links));
+-		total_links +=
+-			ARRAY_SIZE(msm_wsa_cdc_dma_be_dai_links);
++		/* 同 msm_bolero_fe_dai_links：这 3 条 BE 链路的 codec DAI
++		 * 分别是 wsa_macro_rx1 / wsa_macro_rx_mix / wsa_macro_echo，
++		 * 全部由 bolero-cdc/wsa-macro 提供。该 macro 在本平台不 probe
++		 * （DT 无 compatible、wsa-max-devs=0），挂上去会让整张声卡
++		 * 永远 -EPROBE_DEFER。 */
++		if (wsa_max_devs > 0) {
++			memcpy(msm_kona_dai_links + total_links,
++			       msm_wsa_cdc_dma_be_dai_links,
++			       sizeof(msm_wsa_cdc_dma_be_dai_links));
++			total_links +=
++				ARRAY_SIZE(msm_wsa_cdc_dma_be_dai_links);
++		}
+ 
+ 		memcpy(msm_kona_dai_links + total_links,
+ 		       msm_rx_tx_cdc_dma_be_dai_links,

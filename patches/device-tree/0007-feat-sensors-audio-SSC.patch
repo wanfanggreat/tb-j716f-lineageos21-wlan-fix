@@ -1,0 +1,831 @@
+From 22cfba363bebba387988c4c6a075fad0e576a33c Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 11:33:31 +0800
+Subject: [PATCH 7/7] =?UTF-8?q?feat(sensors+audio):=20=E8=A1=A5=E9=BD=90?=
+ =?UTF-8?q?=20SSC=20=E4=BC=A0=E6=84=9F=E5=99=A8=E6=A0=88=E3=80=81=E4=BF=AE?=
+ =?UTF-8?q?=E5=BC=80=E6=9C=BA=E5=8D=A1=E9=A6=96=E5=B1=8F=E4=B8=8E=E6=97=A0?=
+ =?UTF-8?q?=E5=A3=B0=E5=8D=A1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+本批完成三件事，均已在真机（TB-J716F / slot_a）验证。
+
+1) 打包高通 SSC 传感器栈（151 条 blob + 4 个 .vendor 库 + 5 个 rc
+   + /vendor/etc/sensors 128 个配置）。真机结果：45 个传感器全部上线
+   （此前 dumpsys sensorservice 报 "No Sensors on the device"）。
+
+2) 修复卡第一屏（无开机动画）——根因是 VINTF 重复声明：
+   AOSP 模块 android.hardware.sensors@2.0-service.multihal 自带
+   vintf_fragments，会安装 /vendor/etc/vintf/manifest/android.hardware.sensors@2.0-multihal.xml；
+   本文件又手工声明了同一个 HAL，导致 libvintf 合并时判定
+   "Conflicting FqInstance: @2.0::ISensors/default"，
+   vendor manifest 整体解析失败。已用 checkvintf 复现与验证：
+     - 修复前：Cannot add manifest fragment ... Conflicting FqInstance
+     - 修复后：Successfully processed VINTF information
+   因此从 manifest.xml 移除该 <hal> 块，只保留模块自带的 fragment。
+
+3) 修复无声卡（/proc/asound/cards 为空）：
+   - vendor.prop：vendor.audio.feature.ssrec.enable 改为 false。
+     原厂 blob libssrec.so 的 ssr_check_usecase() 在检查功能开关之前
+     就解引用 in->device_list，其 struct stream_in 布局按原厂 HAL 编译，
+     与本树重建的 audio.primary.kona.so 不符 → 打开输入流即 SIGSEGV
+     （get_device_types+18），audioserver 崩溃循环、system_server 卡在
+     media.audio_policy。原厂固件里 SSR 本身也是关的
+     （ro.vendor.audio.sdk.ssr=false），故不再加载该库。
+
+回归：12 个 HAL 服务全部 running，init.svc.*restarting 计数为 0，
+system 特性 89 项，boot_completed=1。
+---
+ device.mk                                     |  99 +++++-
+ manifest.xml                                  |  13 +
+ prebuilts/dtbo-ramoops.img                    | Bin 2703715 -> 2703715 bytes
+ prebuilts/dtbo.img                            | Bin 2703419 -> 2703419 bytes
+ proprietary-files.txt                         | 299 +++++++++++++++++-
+ ...d.hardware.sensors@2.0-service-multihal.rc |   7 +
+ rootdir/etc/init.vendor.sensors.rc            |  52 +++
+ ...i.hardware.sensorscalibrate@1.0-service.rc |   8 +
+ rootdir/etc/vendor.sensors.qti.rc             |  40 +++
+ rootdir/etc/vendor.sensors.sscrpcd.rc         |  37 +++
+ vendor.prop                                   |   8 +-
+ 11 files changed, 559 insertions(+), 4 deletions(-)
+ create mode 100644 rootdir/etc/android.hardware.sensors@2.0-service-multihal.rc
+ create mode 100644 rootdir/etc/init.vendor.sensors.rc
+ create mode 100644 rootdir/etc/vendor.qti.hardware.sensorscalibrate@1.0-service.rc
+ create mode 100644 rootdir/etc/vendor.sensors.qti.rc
+ create mode 100644 rootdir/etc/vendor.sensors.sscrpcd.rc
+
+diff --git a/device.mk b/device.mk
+index 59a5f91..600e4f5 100644
+--- a/device.mk
++++ b/device.mk
+@@ -49,6 +49,9 @@ PRODUCT_PACKAGES += \
+     audio.r_submix.default \
+     audio.usbv2.default \
+ 
++# libsqlite.vendor：vendor.dolby.hardware.dms@2.0-service 经
++# libdlbdsservice.so 依赖 libsqlite.so，缺库时该 HAL 5 秒崩溃循环；
++# 同库也被 location 侧的 libizat_core/liblbs_core/xtra-daemon/xtwifi-client 使用。
+ PRODUCT_PACKAGES += \
+     liba2dpoffload \
+     libaudiopreprocessing \
+@@ -68,6 +71,7 @@ PRODUCT_PACKAGES += \
+     libreverbwrapper \
+     libsndmonitor \
+     libspkrprot \
++    libsqlite.vendor \
+     libvisualizer \
+     libvolumelistener
+ 
+@@ -152,6 +156,34 @@ PRODUCT_PACKAGES += \
+ PRODUCT_PACKAGES += \
+     android.hardware.gatekeeper@1.0.vendor
+ 
++# GNSS
++# android.hardware.gnss@*.vendor：android.hardware.gnss@2.1-service-qti、
++# vendor.qti.gnss@*.so 与 libgarden.so 直接依赖这些 HIDL 接口库。
++# Android 14 已无 VNDK 目录，vendor 命名空间（/linkerconfig/ld.config.txt）
++# 不再包含 /system/${LIB}，所以必须把 .vendor 变体真正打进 vendor 镜像，
++# 否则 GNSS 服务 5 秒崩溃循环、loc_launcher 也无法完成定位初始化。
++# libcurl.vendor：location/QWES 侧 ssgtzd 与 xtwifi-inet-agent 依赖 libcurl.so
++# （见 /vendor/etc/init/ssgtzd.rc、/vendor/etc/izat.conf 的 PROCESS_NAME）。
++PRODUCT_PACKAGES += \
++    android.hardware.gnss@1.0.vendor \
++    android.hardware.gnss@1.1.vendor \
++    android.hardware.gnss@2.0.vendor \
++    android.hardware.gnss@2.1.vendor \
++    libcurl.vendor
++
++# GNSS 服务的 init rc。
++# 原厂 vendor 镜像里没有 gnss 的 .rc（/vendor/etc/init 下无任何 gnss 服务定义，
++# 全镜像 grep 确认）：@2.1 passthrough 实现的加载由服务二进制自己完成
++# （dlopen /vendor/lib64/hw/android.hardware.gnss@2.1-impl-qti.so），
++# 但**没有 rc 就不会有进程被 init 拉起**。
++# VINTF 条目加在 manifest.xml（BoardConfig.mk 的 DEVICE_MANIFEST_FILE）里，
++# 因为 build/make/core/Makefile:161 禁止用 PRODUCT_COPY_FILES 安装 VINTF 片段。
++# rc 取自源码树 hardware/qcom/sm8150/gps/android/2.1/（与 sm7250 同名文件逐字节相同），
++# 该目录仅在其自身 gps_vendor_product.mk 被 inherit 时才安装，本机产品配置未继承，
++# 故在此显式 PRODUCT_COPY_FILES。
++PRODUCT_COPY_FILES += \
++    hardware/qcom/sm8150/gps/android/2.1/android.hardware.gnss@2.1-service-qti.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/android.hardware.gnss@2.1-service-qti.rc
++
+ # Health
+ PRODUCT_PACKAGES += \
+     android.hardware.health@2.1-impl \
+@@ -180,8 +212,11 @@ PRODUCT_PACKAGES += \
+     android.hardware.keymaster@4.1.vendor
+ 
+ # Lights
++# android.hardware.light@2.0.vendor：libFactoryHALCommon.so 依赖它，
++# 缺库时 interfaces.factoryInterface@1.0-service 无法 dlopen。
+ PRODUCT_PACKAGES += \
+-    android.hardware.light-V1-ndk_platform.vendor
++    android.hardware.light-V1-ndk_platform.vendor \
++    android.hardware.light@2.0.vendor
+ 
+ PRODUCT_PACKAGES += \
+     libavservices_minijail \
+@@ -193,12 +228,15 @@ PRODUCT_PACKAGES += \
+     libcodec2_vndk.vendor
+ 
+ # Media
++# libjsoncpp.vendor：vendor.qti.media.c2@1.0-service 经 libqcodec2_platform.so
++# 依赖 libjsoncpp.so，缺库时 Codec2 HAL 无法启动；ssgtzd 也依赖它。
+ PRODUCT_PACKAGES += \
+     libavservices_minijail \
+     libavservices_minijail.vendor \
+     libavservices_minijail_vendor \
+     libcodec2_hidl@1.0.vendor \
+-    libcodec2_vndk.vendor
++    libcodec2_vndk.vendor \
++    libjsoncpp.vendor
+ 
+ PRODUCT_COPY_FILES += \
+     frameworks/av/media/libstagefright/data/media_codecs_google_audio.xml:$(TARGET_COPY_OUT_VENDOR)/etc/media_codecs_google_audio.xml \
+@@ -272,6 +310,22 @@ PRODUCT_COPY_FILES += \
+     frameworks/native/data/etc/android.software.sip.voip.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.sip.voip.xml \
+     frameworks/native/data/etc/android.software.verified_boot.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.verified_boot.xml
+ 
++# Core hardware permissions
++# 使用 AOSP 的 tablet 版核心特性列表：本设备是平板（PRODUCT_CHARACTERISTICS := tablet，
++# lineage 侧继承 common_full_tablet_wifionly.mk）且只有 WiFi，handheld 版会声明
++# android.software.telecom（本机没有电话栈，属于谎报能力），tablet 版没有这一条。
++# 两版仅在 camera / touchscreen.multitouch[.distinct] 上有差异，而设备树已逐条 COPY 的
++# android.hardware.camera.flash-autofocus.xml 与 ...touchscreen.multitouch.jazzhand.xml
++# 已覆盖这些差异项，故 tablet 版不会丢特性。
++# 目标文件名沿用 AOSP/原厂惯例 handheld_core_hardware.xml（goldfish 平板产品同样是
++# tablet 源文件 + handheld_core_hardware.xml 目标名；原厂 /vendor/etc/permissions
++# 下也是这个名字）。
++# 缺此文件时 SystemServer 拿不到 android.software.app_widgets、android.software.home_screen
++# 等约 20 个核心特性，会跳过 AppWidgetService，Trebuchet 通过
++# getSystemService(AppWidgetManager.class) 取到 null 后每秒 NPE 崩溃。
++PRODUCT_COPY_FILES += \
++    frameworks/native/data/etc/tablet_core_hardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/handheld_core_hardware.xml
++
+ # Power
+ PRODUCT_PACKAGES += \
+     android.hardware.power-service-qti
+@@ -330,6 +384,44 @@ PRODUCT_PACKAGES += \
+ PRODUCT_COPY_FILES += \
+     $(LOCAL_PATH)/rootdir/etc/fstab.qcom:$(TARGET_COPY_OUT_RAMDISK)/first_stage_ramdisk/fstab.qcom
+ 
++# Sensors
++# android.hardware.sensors@1.0.vendor / android.frameworks.sensorservice@1.0.vendor：
++# libFactoryHALCommon.so 与 slim_daemon 依赖这两个 HIDL 接口库。
++# android.hardware.sensors@2.0/@2.1.vendor 与 @2.0-ScopedWakelock.vendor、libpower.vendor：
++# android.hardware.sensors@2.0-service.multihal（高通 SSC 传感器 HAL，本次随 SSC 栈一并打包）
++# 的 DT_NEEDED 直接列出这四个库。它们只存在于 /system（A14 无 VNDK 目录，
++# vendor 命名空间看不到），因此必须用 .vendor 变体打进 vendor 镜像，
++# 否则 multihal 会 CANNOT LINK 立即退出，sensorservice 收不到任何传感器。
++PRODUCT_PACKAGES += \
++    android.frameworks.sensorservice@1.0.vendor \
++    android.hardware.sensors@1.0.vendor \
++    android.hardware.sensors@2.0.vendor \
++    android.hardware.sensors@2.1.vendor \
++    android.hardware.sensors@2.0-ScopedWakelock.vendor \
++    libpower.vendor
++
++# Sensors (Qualcomm SSC / SLPI) 的 init rc。
++# 整个 SSC 栈此前未打包（见 proprietary-files.txt 末段），rc 自然也缺失，
++# 因此没有任何进程被 init 拉起 —— 这是 sensors 完全不可用、
++# 并连带导致 camera provider 周期性重启的直接原因之一。
++# 以下 5 个 rc 与 /mnt/vstock/etc/init/ 下的原厂文件逐字节相同
++# （已 diff 验证），已放入本设备树 rootdir/etc/，
++# 故按 GNSS rc 的同一方式用 PRODUCT_COPY_FILES 安装。
++# host_init_verifier 预检通过（5/5 exit=0）。
++#   vendor.sensors.sscrpcd.rc : service vendor.sensors /vendor/bin/sscrpcd sensorspd
++#                               class early_hal, user system, group system wakelock
++#   vendor.sensors.qti.rc     : service vendor.sensors.qti + vendor-sensor-sh
++#   init.vendor.sensors.rc    : on early-boot 写 /sys/kernel/boot_slpi/boot 1，
++#                               并 chown /mnt/vendor/persist/sensors/*
++#   ...-service-multihal.rc   : service vendor.sensors-hal-2-0-multihal, class hal
++#   ...sensorscalibrate...rc  : service sensorscal-hal-1-0, class hal
++PRODUCT_COPY_FILES += \
++    $(LOCAL_PATH)/rootdir/etc/android.hardware.sensors@2.0-service-multihal.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/android.hardware.sensors@2.0-service-multihal.rc \
++    $(LOCAL_PATH)/rootdir/etc/init.vendor.sensors.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.vendor.sensors.rc \
++    $(LOCAL_PATH)/rootdir/etc/vendor.qti.hardware.sensorscalibrate@1.0-service.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/vendor.qti.hardware.sensorscalibrate@1.0-service.rc \
++    $(LOCAL_PATH)/rootdir/etc/vendor.sensors.qti.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/vendor.sensors.qti.rc \
++    $(LOCAL_PATH)/rootdir/etc/vendor.sensors.sscrpcd.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/vendor.sensors.sscrpcd.rc
++
+ # Service Tracker
+ PRODUCT_PACKAGES += \
+     vendor.qti.hardware.servicetracker@1.2.vendor
+@@ -385,9 +477,12 @@ PRODUCT_COPY_FILES += \
+     $(LOCAL_PATH)/wifi/WCNSS_qcom_cfg_qca6390.ini:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/WCNSS_qcom_cfg.ini
+ 
+ # WiFi Display
++# libpng.vendor：wifidisplayhalservice 经 libsi.so / libwfdmmsrc_proprietary.so
++# 依赖 libpng.so，缺库时该服务 5 秒崩溃循环。
+ PRODUCT_PACKAGES += \
+     libavservices_minijail \
+     libnl \
++    libpng.vendor \
+     libwfdaac_vendor
+ 
+ PRODUCT_BOOT_JARS += \
+diff --git a/manifest.xml b/manifest.xml
+index 0eb98cf..51f6b43 100644
+--- a/manifest.xml
++++ b/manifest.xml
+@@ -35,6 +35,12 @@
+         <transport>hwbinder</transport>
+         <fqname>@1.0::IGatekeeper/default</fqname>
+     </hal>
++    <hal format="hidl">
++        <name>android.hardware.gnss</name>
++        <transport>hwbinder</transport>
++        <fqname>@1.1::IGnss/default</fqname>
++        <fqname>@2.1::IGnss/default</fqname>
++    </hal>
+     <hal format="hidl">
+         <name>android.hardware.keymaster</name>
+         <transport>hwbinder</transport>
+@@ -51,6 +57,13 @@
+         <transport>hwbinder</transport>
+         <fqname>@1.0::IMemtrack/default</fqname>
+     </hal>
++    <!-- android.hardware.sensors 不在此声明：AOSP 模块
++         android.hardware.sensors@2.0-service.multihal 自带 vintf_fragments
++         (android.hardware.sensors@2.0-multihal.xml)，会安装到
++         /vendor/etc/vintf/manifest/。若此处再声明一次，libvintf 在合并主
++         manifest 与 fragment 时判定 "Conflicting FqInstance:
++         @2.0::ISensors/default"，vendor manifest 整体解析失败，
++         hwservicemanager 起不来 → 卡第一屏（无开机动画）。 -->
+     <hal format="hidl">
+         <name>android.hardware.soundtrigger</name>
+         <transport>hwbinder</transport>
+diff --git a/prebuilts/dtbo-ramoops.img b/prebuilts/dtbo-ramoops.img
+index a56b3e2549e6f147ffc60ddd96270cbc1c9cf8f5..d45d7e25dee465909d4f31883ec50cf2446abcf3 100644
+GIT binary patch
+delta 433
+zcmZY4ze@sP7zgn4Qu5W)x>B>$yz*y*B+=4jQ;YvY($L-zMAKCWZ=4s@P!BE95;RFs
+z@EkN4Tm;h4CP-1BI2VLN+0f(B4bkwKzAxYB`?hz^9Br~yc3g{ZCCM!aDMOem3WWDc
+zA{ih~?3G;e*pIW}-xyccgPX;p7uf?}AMy-5b>$f3^GXQcYr(@yxQKe)90P;IjTm6v
+zW2@b1w;NT)jjD%uiG)Vgcar#b;bDR2BtID<!<dugrAq%%x@-5SAafN)$SA51XgvSv
+z;Ixv2$QTKeaWX;cBe7Mhsbe>3%?Q_;Q4&L~Ihnia$Eig-HuX3+b%ji!sZa0rtl0h!
+z?Pqrqe76{b&jaSg{Tp_hhSLs<z~gq(1#2y)!|Z+B56dm)gV(a+!f2b7MP8^SNRp&T
+W8Vj{d#bcG9+qWC_3^wZ7y^SBbf|XhT
+
+delta 433
+zcmaFdw3P8N5I3|iZee;K&%?&Rpt^&}n*oRz+JDD00WmWWvuytz&uX$AB&{I<mEN9M
+zB3kJ^?Vcdl^k1I^HK*VHDkwYMz(7H4`-lCaQ#VfEAj8ekzFmYJh&i@z7vcOm6KpyQ
+z%=8`WINNuu;{sxCAm-V=V;%22WegimTej=+@BuMD5DRSA<q>r21}Ree3NxpEx?p?#
+zbRi%X-d;al<k}q+GunZ!1Y$8D76)PpAeIDTDWL16WmCZ>J%yRnbyK>%>!u74%Wm(w
+zDW|&`B(3TIlRn%d-+s790f-g1AMR1=_zjkZ`3LBJ&Lce2|2*R4oc?nnC-?RVyEzZ2
+zO<(YoQ+oROMitiS1&=s;rt2S*=bIk)h?95v{T2n*?J|!!TbSDI_bUUj3J|LTvD$X~
+X{p#IZV8d6y?7ntVefzbO8olKJU#XFX
+
+diff --git a/prebuilts/dtbo.img b/prebuilts/dtbo.img
+index 5755a26342b7b5d9796f74ae80af0f27e8e2b233..c087d3d5870cc1731e0b7e3f7adc8e1a89900180 100644
+GIT binary patch
+delta 379
+zcmdnpu#|B(5I3|iZee;K&%?pMpt^&>$eRI(+keM10WmWWvuytz&uX$AB&{I<leQLT
+zYqu6>2V#!x*5aI=)4;k}VA2!Ta<)%c%LT;TK+Lm!!dl*W$|xoPb+MhcY-i=>17dz4
+z7TC_pE$G$_Ql$13W={At!S?WJLO?9MJ$#zTwL2JQRC-U>m*o@NE|ttSb>sB=Y0Oim
+z=ekISZ{H`%u2;}r_D~Fn#erA?h$Xj|J(POz4Q$0zm=#Gkq}!8j$N;hI_M{tfx|>1L
+zstz#e+1>K(v%3|5SaJL8Zl#XjU}=~~fga;L!ZSVkkUVGmpUKKVtOCTUK&-a?&t&yw
+UCScVoV1}(bp}u|H360)z02R%8(EtDd
+
+delta 379
+zcmdnpu#|B(5I3|iZee;K&%?&Rpt^&}n*oRz+JDD00WmWWvuytz&uX$AB&{I<leQLT
+zYqu6>2V#!x*5aI=)4;k}VA2!Ta<)%c%LT;TK+Lm!!dl*W$|xoPb+MhcY-i=>17dz4
+z7TC_pE$G$_Ql$13W={At!S?WJLO?9MJ$#zTwL2JQRC-U>m*o@NE|ttSb>sB=Y0Oim
+z=ekISZ{H`%u2;}r_D~Fn#erA?h$Xj|J(POz4Q$0zm=#Gkq}!8j$N;hI_M{tfx|>1L
+zstz#e+1>K(v%3|5SaJL8Zl#XjU}=~~fga;L!ZSVkkUVGmpUKKVtOCTUK&-a?&t&yw
+UCScVoV1}(bp}u|H360)z06X?}{Qv*}
+
+diff --git a/proprietary-files.txt b/proprietary-files.txt
+index dd626c2..13e1df2 100644
+--- a/proprietary-files.txt
++++ b/proprietary-files.txt
+@@ -965,6 +965,7 @@ vendor/bin/slim_daemon
+ vendor/bin/xtra-daemon
+ vendor/bin/xtwifi-client
+ vendor/bin/xtwifi-inet-agent
++vendor/lib/hw/android.hardware.gnss@2.1-impl-qti.so
+ vendor/lib/hw/vendor.qti.gnss@4.0-impl.so
+ vendor/lib/libasn1cper.so
+ vendor/lib/libasn1crt.so
+@@ -998,6 +999,7 @@ vendor/lib/vendor.qti.gnss@2.1.so
+ vendor/lib/vendor.qti.gnss@3.0.so
+ vendor/lib/vendor.qti.gnss@4.0-service.so
+ vendor/lib/vendor.qti.gnss@4.0.so
++vendor/lib64/hw/android.hardware.gnss@2.1-impl-qti.so
+ vendor/lib64/hw/vendor.qti.gnss@4.0-impl.so
+ vendor/lib64/libasn1cper.so
+ vendor/lib64/libasn1crt.so
+@@ -1350,6 +1352,13 @@ vendor/lib/vendor.qti.qspmhal@1.0.so
+ vendor/lib64/vendor.qti.qspmhal@1.0-impl.so
+ vendor/lib64/vendor.qti.qspmhal@1.0.so
+ 
++# Qualcomm XML
++# libxml.so 是高通私有 XML 解析库，SONAME 就是 libxml.so（依赖 libdiag.so），
++# 与 AOSP 的 libxml2.so 是两个不同的库、不能互相替代（SONAME 不同）。
++# libconfigdb（Radio/IMS）与 libwqe 依赖它，缺库时 imsdatadaemon 崩溃循环。
++vendor/lib/libxml.so
++vendor/lib64/libxml.so
++
+ # Radio
+ system_ext/lib64/vendor.qti.hardware.embmssl@1.0.so
+ system_ext/lib64/vendor.qti.hardware.embmssl@1.1.so
+@@ -1583,6 +1592,18 @@ vendor/lib64/vendor.qti.imsrtpservice@3.0.so
+ vendor/lib/vendor.qti.esepowermanager@1.0.so
+ vendor/lib64/vendor.qti.esepowermanager@1.0.so
+ 
++# Sensors
++# libsensorslog / libsns_fastRPC_util: libcamxncs (相机) 与 libsns_* 桩的依赖，
++#   缺库时 camera provider 无法加载 camera.qcom.so;
++# libsensorndkbridge: slim_daemon (GNSS) 的依赖;
++# vendor.qti.hardware.sensorscalibrate@1.0: libFactoryHALCommon 的依赖。
++vendor/lib/libsensorslog.so
++vendor/lib/libsns_fastRPC_util.so
++vendor/lib64/libsensorndkbridge.so
++vendor/lib64/libsensorslog.so
++vendor/lib64/libsns_fastRPC_util.so
++vendor/lib64/vendor.qti.hardware.sensorscalibrate@1.0.so
++
+ # Service tracker
+ vendor/bin/hw/vendor.qti.hardware.servicetracker@1.2-service
+ vendor/etc/init/vendor.qti.hardware.servicetracker@1.2-service.rc
+@@ -1976,7 +1997,28 @@ vendor/etc/firmware/ifaata.mdt
+ vendor/etc/gtx/Lenovo_P11_GT7385P_test_sensor_8.tporder
+ vendor/etc/init/boringssl_self_test.rc
+ vendor/etc/init/factorybsp_service.rc
+-vendor/etc/init/factorybsp_service_qcom.rc
++# vendor/etc/init/factorybsp_service_qcom.rc
++#   ↑ 原厂产线测试 rc，本设备树不打包（会造成不可恢复的崩溃循环）。
++#     该文件定义了唯一一个非 oneshot 的工厂服务：
++#       service interfaces.factoryInterface@1.0-service /vendor/bin/hw/interfaces.factoryInterface@1.0-service
++#           class late_start
++#           seclabel u:r:factory_services:s0
++#     `factory_services` 这个 SELinux 域在本镜像里不存在（它来自原厂 vendor 分区的
++#     预编译 vendor_sepolicy.cil；AOSP/QCOM sepolicy 源码树里没有对应定义，本设备树
++#     sepolicy/ 目录也从未定义过它，实测 grep 命中数为 0）。init 的 setexeccon 因此失败：
++#       cannot setexeccon('u:r:factory_services:s0') for interfaces.factoryInterface@1.0-service: Invalid argument
++#     而该服务不是 oneshot，init 每 ~5s 重试一次，4 次后触发
++#       sys.init.updatable_crashing=1
++#     继而每 5s 拉起 /system/bin/flags_health_check UPDATABLE_CRASHING（重置 server
++#     configurable flags）并让 apexd 反复尝试回滚。这是当前唯一的崩溃循环服务。
++#     不补 SELinux 域的原因：即使补上，该 HAL 也**加载不了**——libFactoryHALCommon.so
++#     依赖 android::String8::toUpper()（符号 _ZN7android7String7toUpperEv），而该符号
++#     在 AOSP libutils、本版本 VNDK 以及设备上所有 libutils.so 中都不存在（只有原厂
++#     出厂镜像的 VNDK v30 才导出它）。实测在已有域下运行仍报：
++#       CANNOT LINK EXECUTABLE ... cannot locate symbol "_ZN7android7String87toUpperEv"
++#     服务照样秒退、照样算崩溃次数。产线工厂测试功能对用户设备无用，故直接不打包该 rc。
++#     注：proprietary-files.txt 里的 `-` 前缀表示“打包成 APK/JAR”，**不是**排除/禁用，
++#     所以这里只能用 `#` 注释掉（与本文件 hostapd.android.rc / wpa_supplicant 同样的做法）。
+ vendor/etc/init/feature_enabler_client.rc
+ # vendor/etc/init/hostapd.android.rc
+ #   ↑ 同理：原厂这份声明 HIDL interface
+@@ -2364,3 +2406,258 @@ vendor/lib/vendor.lenovo.hardware.display@1.0.so
+ vendor/lib/vendor.lenovo.hardware.misc@1.0.so
+ vendor/lib/vendor.lenovo.hardware.performance@1.0.so
+ vendor/lib/vendor.lenovo.hardware.touchscreen@1.0.so
++
++# Audio (vendor configs, factory)
++# mixer_paths.xml / audio_platform_info*.xml 是 kona HAL 的“决定性”配置：
++#   audio.primary.kona.so 启动时依次找
++#     /vendor/etc/audio_platform_info_<snd_card>_<form_factor>.xml
++#     /vendor/etc/audio_platform_info_<snd_card>.xml
++#     /vendor/etc/audio_platform_info.xml
++#   以及 /vendor/etc/mixer_paths.xml；全缺则 HAL 拿不到 mixer 控件、开机无声卡。
++# 原厂 vendor 分区存在、本设备树此前未打包，故缺失。
++vendor/etc/audio_platform_info.xml
++vendor/etc/audio_platform_info_intcodec.xml
++vendor/etc/audio_platform_info_qrd.xml
++vendor/etc/a2dp_audio_policy_configuration.xml
++vendor/etc/audio_effects.conf
++vendor/etc/bluetooth_qti_audio_policy_configuration.xml
++vendor/etc/bluetooth_qti_hearing_aid_audio_policy_configuration.xml
++vendor/etc/mixer_paths.xml
++vendor/etc/sound_trigger_mixer_paths.xml
++vendor/etc/sound_trigger_mixer_paths_cdp.xml
++vendor/etc/sound_trigger_mixer_paths_qrd.xml
++# /vendor/etc/audio/audio_policy_configuration.xml 是“sku 感知”变体，当
++# ro.boot.product.vendor.sku 存在时 audioserver 走
++#   /vendor/etc/audio/sku_<sku>/ → 该目录；本机未设 sku 属性，故仅为回退/占位。
++vendor/etc/audio/audio_policy_configuration.xml
++vendor/etc/audio/sku_taro/audio_effects.xml
++
++# Audio ACDB calibration (原厂调音数据，libacdbloader 从 /vendor/etc/acdbdata 读取)
++vendor/etc/acdbdata/adsp_avs_config.acdb
++vendor/etc/acdbdata/MTP/MTP_Bluetooth_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_General_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_Global_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_Handset_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_Hdmi_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_Headset_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_Speaker_cal.acdb
++vendor/etc/acdbdata/MTP/MTP_workspaceFile.qwsp
++vendor/etc/acdbdata/QRD/QRD_Bluetooth_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_General_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_Global_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_Handset_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_Hdmi_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_Headset_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_Speaker_cal.acdb
++vendor/etc/acdbdata/QRD/QRD_workspaceFile.qwsp
++
++# Audio FX modules (QTI/Dolby 后处理；audio_effects.xml 已引用这些名字，
++#   libdlbvol/libswdap/libswgamedap/libswvqe 由 <library> 直接加载，
++#   libqcvirt/libqcreverb/libqcbassboost 由 libeffectproxy 按需加载)
++vendor/lib/soundfx/libdlbvol.so
++vendor/lib/soundfx/libqcbassboost.so
++vendor/lib/soundfx/libqcreverb.so
++vendor/lib/soundfx/libqcvirt.so
++vendor/lib/soundfx/libswdap.so
++vendor/lib/soundfx/libswgamedap.so
++vendor/lib/soundfx/libswvqe.so
++vendor/lib64/soundfx/libdlbvol.so
++vendor/lib64/soundfx/libqcbassboost.so
++vendor/lib64/soundfx/libqcreverb.so
++vendor/lib64/soundfx/libqcvirt.so
++vendor/lib64/soundfx/libswdap.so
++vendor/lib64/soundfx/libswgamedap.so
++vendor/lib64/soundfx/libswvqe.so
++
++# Sensors (Qualcomm SSC / SLPI stack)
++# sensors 完全不可用（dumpsys sensorservice → "No Sensors on the device"、
++#   devInitCheck : -19）的根因：整个高通 Sensor Core 栈从未打包进 vendor 镜像。
++# 连带症状：libcamxncs.so 等不到 sensors QMI 服务（QMI over QRTR），
++#   CamX NCS 模块 QmiWaitForService() 超时 → camxncs 连接失败 →
++#   camera provider 每约一分钟被 SIGPIPE 终止并重启，
++#   dumpsys media.camera 的设备数在 0 与 3 之间抖动。
++# 说明：libsensorslog.so / libsns_fastRPC_util.so（32/64）、
++#   libsensorndkbridge.so(64)、vendor.qti.hardware.sensorscalibrate@1.0.so(64)、
++#   libsns_device_mode_stub.so / libsns_low_lat_stream_stub.so /
++#   libsns_registry_skel.so / libssc_default_listener.so / libsnsapi.so（32/64）
++#   已在前面章节列入，此处不重复；本段只补漏。
++
++# SSC HAL 服务与工具二进制。
++# android.hardware.sensors@2.0-service.multihal 是 AOSP multihal 代理：
++#   它读 /vendor/etc/sensors/hals.conf（内容为 sensors.ssc.so），
++#   依次 dlopen ""、/vendor/lib64/hw/、/odm/lib64/hw/ 下的 sensors.ssc.so，
++#   再用 dlsym 取 sensorsHalGetSubHal 拿到 SubHal（详见 HalProxy.cpp:510）。
++# sscrpcd 是 sensor registry 配置守护进程，rc 里 class early_hal + shutdown critical；
++# sensors.qti 提供 sensors QMI（QRTR）服务端，即相机 NCS 所等待的那一个。
++vendor/bin/hw/android.hardware.sensors@2.0-service.multihal
++vendor/bin/hw/vendor.qti.hardware.sensorscalibrate@1.0-service
++vendor/bin/sensors.qti
++vendor/bin/sscrpcd
++
++# SSC 核心库（64 位）。sensors.ssc.so 是 SubHal 实现本体，
++# libssc.so 提供 QMI/QRTR 传输，libsnsapi.so 是 sensor API，
++# libsnsdiaglog.so 是 diag 日志，libsensorcal.so 供标定服务使用。
++vendor/lib64/android.hardware.sensors@2.0-ScopedWakelock.so
++vendor/lib64/libsensorcal.so
++vendor/lib64/libsnsdiaglog.so
++vendor/lib64/libssc.so
++vendor/lib64/sensors.ssc.so
++
++# SSC 核心库（32 位）。与 64 位成对提供，避免 32 位组件缺库。
++vendor/lib/android.hardware.sensors@2.0-ScopedWakelock.so
++vendor/lib/libsensorcal.so
++vendor/lib/libsensorndkbridge.so
++vendor/lib/libsnsdiaglog.so
++vendor/lib/libssc.so
++vendor/lib/sensors.ssc.so
++vendor/lib/vendor.qti.hardware.sensorscalibrate@1.0.so
++
++# sensorscalibrate HAL impl（动态库，按架构分别放在 hw/ 子目录）。
++vendor/lib/hw/vendor.qti.hardware.sensorscalibrate@1.0-impl.so
++vendor/lib64/hw/vendor.qti.hardware.sensorscalibrate@1.0-impl.so
++
++# SSC 在 ADSP 上的 skel 库（FastRPC 由 HLOS 侧 libsns_fastRPC_util.so 加载）。
++# _stub 版本已在前面章节列出；_skel 版本是真正在 ADSP 上执行的实现，
++# 缺它则 device_mode / low-latency stream 功能在 DSP 侧无法建立。
++vendor/lib/rfsa/adsp/libsns_device_mode_skel.so
++vendor/lib/rfsa/adsp/libsns_low_lat_stream_skel.so
++vendor/lib64/rfsa/adsp/libsns_device_mode_skel.so
++vendor/lib64/rfsa/adsp/libsns_low_lat_stream_skel.so
++
++# sensorscalibrate 的 Java 库声明（frameworks 侧 ISensorsCalibrate 权限）。
++vendor/etc/permissions/vendor-qti-hardware-sensorscalibrate.xml
++
++# /vendor/etc/sensors：SubHal 配置与 sensor registry 数据。
++# hals.conf 决定 multihal 加载哪个 SubHal（本机为 sensors.ssc.so）；
++# sns_reg_config 描述 registry 的持久化路径 /mnt/vendor/persist/sensors/registry/registry；
++# config/*.json 与 proto/*.proto 是各 sensor 的运行时配置与协议定义，
++# sns_reg_config 列出的 soc_id/hw_platform 等文件均取自 /sys/devices/soc0。
++# 这些文件在原厂 vendor 分区存在、本设备树此前未打包。
++vendor/etc/sensors/config/icm4x6xx_0.json
++vendor/etc/sensors/config/kona_amd_sw_disabled.json
++vendor/etc/sensors/config/kona_bu52053nvx_0.json
++vendor/etc/sensors/config/kona_default_sensors.json
++vendor/etc/sensors/config/kona_dynamic_sensors.json
++vendor/etc/sensors/config/kona_hdk_bmi26x_0.json
++vendor/etc/sensors/config/kona_icm4x6xx_0.json
++vendor/etc/sensors/config/kona_irq.json
++vendor/etc/sensors/config/kona_ltr308_0.json
++vendor/etc/sensors/config/kona_mmc56x3x_0.json
++vendor/etc/sensors/config/kona_power_0.json
++vendor/etc/sensors/config/kona_qrd_ak991x_0.json
++vendor/etc/sensors/config/kona_sx932x_0.json
++vendor/etc/sensors/config/kona_tmf8801_0.json
++vendor/etc/sensors/config/kona_tof_wake.json
++vendor/etc/sensors/config/kona_wake_gesture.json
++vendor/etc/sensors/config/sns_amd.json
++vendor/etc/sensors/config/sns_amd_sw_disabled.json
++vendor/etc/sensors/config/sns_amd_sw_enabled.json
++vendor/etc/sensors/config/sns_aont.json
++vendor/etc/sensors/config/sns_basic_gestures.json
++vendor/etc/sensors/config/sns_bring_to_ear.json
++vendor/etc/sensors/config/sns_ccd.json
++vendor/etc/sensors/config/sns_ccd_v2_walk.json
++vendor/etc/sensors/config/sns_ccd_v3_1_walk.json
++vendor/etc/sensors/config/sns_ccd_v3_walk.json
++vendor/etc/sensors/config/sns_cm.json
++vendor/etc/sensors/config/sns_dae.json
++vendor/etc/sensors/config/sns_device_orient.json
++vendor/etc/sensors/config/sns_diag_filter.json
++vendor/etc/sensors/config/sns_direct_channel.json
++vendor/etc/sensors/config/sns_distance_bound.json
++vendor/etc/sensors/config/sns_dpc.json
++vendor/etc/sensors/config/sns_facing.json
++vendor/etc/sensors/config/sns_fmv.json
++vendor/etc/sensors/config/sns_fmv_legacy.json
++vendor/etc/sensors/config/sns_geomag_rv.json
++vendor/etc/sensors/config/sns_gyro_cal.json
++vendor/etc/sensors/config/sns_heart_rate.json
++vendor/etc/sensors/config/sns_mag_cal.json
++vendor/etc/sensors/config/sns_mag_cal_legacy.json
++vendor/etc/sensors/config/sns_multishake.json
++vendor/etc/sensors/config/sns_pedometer.json
++vendor/etc/sensors/config/sns_rmd.json
++vendor/etc/sensors/config/sns_rotv.json
++vendor/etc/sensors/config/sns_smd.json
++vendor/etc/sensors/config/sns_tilt.json
++vendor/etc/sensors/config/sns_tilt_sw_disabled.json
++vendor/etc/sensors/config/sns_tilt_sw_enabled.json
++vendor/etc/sensors/config/sns_tilt_to_wake.json
++vendor/etc/sensors/config/sns_wrist_pedo.json
++vendor/etc/sensors/config/sx932x_0.json
++vendor/etc/sensors/config/tmf8801_0.json
++vendor/etc/sensors/config/wigig_sensing_0.json
++vendor/etc/sensors/hals.conf
++vendor/etc/sensors/proto/descriptor.proto
++vendor/etc/sensors/proto/mot_movement.proto
++vendor/etc/sensors/proto/nanopb.proto
++vendor/etc/sensors/proto/sns_accel.proto
++vendor/etc/sensors/proto/sns_accel_cal.proto
++vendor/etc/sensors/proto/sns_activity_recognition.proto
++vendor/etc/sensors/proto/sns_ambient_light.proto
++vendor/etc/sensors/proto/sns_ambient_temperature.proto
++vendor/etc/sensors/proto/sns_amd.proto
++vendor/etc/sensors/proto/sns_aont.proto
++vendor/etc/sensors/proto/sns_basic_gestures.proto
++vendor/etc/sensors/proto/sns_bring_to_ear.proto
++vendor/etc/sensors/proto/sns_cal.proto
++vendor/etc/sensors/proto/sns_client.proto
++vendor/etc/sensors/proto/sns_cmc.proto
++vendor/etc/sensors/proto/sns_da_test.proto
++vendor/etc/sensors/proto/sns_device_mode.proto
++vendor/etc/sensors/proto/sns_device_orient.proto
++vendor/etc/sensors/proto/sns_diag.proto
++vendor/etc/sensors/proto/sns_diag_sensor.proto
++vendor/etc/sensors/proto/sns_direct_channel.proto
++vendor/etc/sensors/proto/sns_dpc.proto
++vendor/etc/sensors/proto/sns_ext_svc.proto
++vendor/etc/sensors/proto/sns_facing.proto
++vendor/etc/sensors/proto/sns_fmv.proto
++vendor/etc/sensors/proto/sns_formatter.proto
++vendor/etc/sensors/proto/sns_fw.proto
++vendor/etc/sensors/proto/sns_game_rv.proto
++vendor/etc/sensors/proto/sns_geomag_rv.proto
++vendor/etc/sensors/proto/sns_gravity.proto
++vendor/etc/sensors/proto/sns_gyro.proto
++vendor/etc/sensors/proto/sns_gyro_cal.proto
++vendor/etc/sensors/proto/sns_gyro_rot_matrix.proto
++vendor/etc/sensors/proto/sns_hall.proto
++vendor/etc/sensors/proto/sns_heart_beat.proto
++vendor/etc/sensors/proto/sns_heart_rate.proto
++vendor/etc/sensors/proto/sns_hinge_angle.proto
++vendor/etc/sensors/proto/sns_humidity.proto
++vendor/etc/sensors/proto/sns_mag.proto
++vendor/etc/sensors/proto/sns_mag_cal.proto
++vendor/etc/sensors/proto/sns_oem1.proto
++vendor/etc/sensors/proto/sns_offbody_detect.proto
++vendor/etc/sensors/proto/sns_pedometer.proto
++vendor/etc/sensors/proto/sns_pedometer_wrist.proto
++vendor/etc/sensors/proto/sns_physical_sensor_test.proto
++vendor/etc/sensors/proto/sns_pose_6dof.proto
++vendor/etc/sensors/proto/sns_ppg.proto
++vendor/etc/sensors/proto/sns_pressure.proto
++vendor/etc/sensors/proto/sns_proximity.proto
++vendor/etc/sensors/proto/sns_psmd.proto
++vendor/etc/sensors/proto/sns_registry.proto
++vendor/etc/sensors/proto/sns_resampler.proto
++vendor/etc/sensors/proto/sns_rgb.proto
++vendor/etc/sensors/proto/sns_rmd.proto
++vendor/etc/sensors/proto/sns_rotv.proto
++vendor/etc/sensors/proto/sns_sar.proto
++vendor/etc/sensors/proto/sns_sensor_temperature.proto
++vendor/etc/sensors/proto/sns_sig_motion.proto
++vendor/etc/sensors/proto/sns_std.proto
++vendor/etc/sensors/proto/sns_std_event_gated_sensor.proto
++vendor/etc/sensors/proto/sns_std_sensor.proto
++vendor/etc/sensors/proto/sns_std_type.proto
++vendor/etc/sensors/proto/sns_step_detect.proto
++vendor/etc/sensors/proto/sns_suid.proto
++vendor/etc/sensors/proto/sns_thermopile.proto
++vendor/etc/sensors/proto/sns_threshold.proto
++vendor/etc/sensors/proto/sns_tilt.proto
++vendor/etc/sensors/proto/sns_tilt_to_wake.proto
++vendor/etc/sensors/proto/sns_tof_wake.proto
++vendor/etc/sensors/proto/sns_ultra_violet.proto
++vendor/etc/sensors/proto/sns_wake_gesture.proto
++vendor/etc/sensors/proto/sns_wrist_tilt_gesture.proto
++vendor/etc/sensors/sns_reg_config
+diff --git a/rootdir/etc/android.hardware.sensors@2.0-service-multihal.rc b/rootdir/etc/android.hardware.sensors@2.0-service-multihal.rc
+new file mode 100644
+index 0000000..0b3d4c2
+--- /dev/null
++++ b/rootdir/etc/android.hardware.sensors@2.0-service-multihal.rc
+@@ -0,0 +1,7 @@
++service vendor.sensors-hal-2-0-multihal /vendor/bin/hw/android.hardware.sensors@2.0-service.multihal
++    class hal
++    user system
++    group system wakelock context_hub
++    writepid /dev/cpuset/system-background/tasks
++    capabilities BLOCK_SUSPEND
++    rlimit rtprio 10 10
+diff --git a/rootdir/etc/init.vendor.sensors.rc b/rootdir/etc/init.vendor.sensors.rc
+new file mode 100644
+index 0000000..24d4863
+--- /dev/null
++++ b/rootdir/etc/init.vendor.sensors.rc
+@@ -0,0 +1,52 @@
++# Copyright (c) 2019 Qualcomm Technologies, Inc.
++# All Rights Reserved.
++# Confidential and Proprietary - Qualcomm Technologies, Inc.
++#
++# Copyright (c) 2009-2012, 2014-2019, The Linux Foundation. All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#     # Redistributions of source code must retain the above copyright
++#       notice, this list of conditions and the following disclaimer.
++#     # Redistributions in binary form must reproduce the above copyright
++#       notice, this list of conditions and the following disclaimer in the
++#       documentation and/or other materials provided with the distribution.
++#     # Neither the name of The Linux Foundation nor
++#       the names of its contributors may be used to endorse or promote
++#       products derived from this software without specific prior written
++#       permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++# NON-INFRINGEMENT ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
++# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
++# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
++# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
++# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++#
++
++on early-boot
++
++    write /sys/kernel/boot_slpi/boot 1
++
++    chown system system /mnt/vendor/persist/sensors
++    chown system system /mnt/vendor/persist/sensors/sns.reg
++    chown system system /mnt/vendor/persist/sensors/sensors_list.txt
++    chown system system /mnt/vendor/persist/sensors/registry
++    chown system system /mnt/vendor/persist/sensors/registry/registry
++    chown system system /mnt/vendor/persist/sensors/registry/registry/sensors_registry
++    chown system system /mnt/vendor/persist/sensors/sensors_settings
++    chown system system /mnt/vendor/persist/sensors/registry/sns_reg_config
++    chown system system /mnt/vendor/persist/sensors/registry/sns_reg_version
++    chown system system /mnt/vendor/persist/sensors/registry/config
++    chmod 0664 /mnt/vendor/persist/sensors/sensors_settings
++    chown system system /sys/kernel/boot_adsp/ssr
++
++on post-fs-data && property:ro.build.type=userdebug
++    #sensors log dir
++    mkdir /data/vendor/sensors 0777 system system
++    mkdir /data/vendor/sensors/scripts 0777 system system
+diff --git a/rootdir/etc/vendor.qti.hardware.sensorscalibrate@1.0-service.rc b/rootdir/etc/vendor.qti.hardware.sensorscalibrate@1.0-service.rc
+new file mode 100644
+index 0000000..00e2e61
+--- /dev/null
++++ b/rootdir/etc/vendor.qti.hardware.sensorscalibrate@1.0-service.rc
+@@ -0,0 +1,8 @@
++# Copyright (c) 2017 Qualcomm Technologies, Inc.
++# All Rights Reserved.
++# Confidential and Proprietary - Qualcomm Technologies, Inc.
++#
++service sensorscal-hal-1-0  /vendor/bin/hw/vendor.qti.hardware.sensorscalibrate@1.0-service
++    class hal
++    user system
++    group system
+diff --git a/rootdir/etc/vendor.sensors.qti.rc b/rootdir/etc/vendor.sensors.qti.rc
+new file mode 100644
+index 0000000..bc8c95a
+--- /dev/null
++++ b/rootdir/etc/vendor.sensors.qti.rc
+@@ -0,0 +1,40 @@
++# Copyright (c) 2019 Qualcomm Technologies, Inc.
++# All Rights Reserved.
++# Confidential and Proprietary - Qualcomm Technologies, Inc.
++#
++# Copyright (c) 2009-2012, 2014-2019, The Linux Foundation. All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#     # Redistributions of source code must retain the above copyright
++#       notice, this list of conditions and the following disclaimer.
++#     # Redistributions in binary form must reproduce the above copyright
++#       notice, this list of conditions and the following disclaimer in the
++#       documentation and/or other materials provided with the distribution.
++#     # Neither the name of The Linux Foundation nor
++#       the names of its contributors may be used to endorse or promote
++#       products derived from this software without specific prior written
++#       permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++# NON-INFRINGEMENT ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
++# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
++# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
++# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
++# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++#
++
++service vendor.sensors.qti /vendor/bin/sensors.qti
++    class core
++    user system
++    group system
++
++service vendor-sensor-sh /vendor/bin/init.qcom.sensors.sh
++    class late_start
++    user root
++    oneshot
+diff --git a/rootdir/etc/vendor.sensors.sscrpcd.rc b/rootdir/etc/vendor.sensors.sscrpcd.rc
+new file mode 100644
+index 0000000..741875a
+--- /dev/null
++++ b/rootdir/etc/vendor.sensors.sscrpcd.rc
+@@ -0,0 +1,37 @@
++# Copyright (c) 2019 Qualcomm Technologies, Inc.
++# All Rights Reserved.
++# Confidential and Proprietary - Qualcomm Technologies, Inc.
++#
++# Copyright (c) 2009-2012, 2014-2019, The Linux Foundation. All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#     # Redistributions of source code must retain the above copyright
++#       notice, this list of conditions and the following disclaimer.
++#     # Redistributions in binary form must reproduce the above copyright
++#       notice, this list of conditions and the following disclaimer in the
++#       documentation and/or other materials provided with the distribution.
++#     # Neither the name of The Linux Foundation nor
++#       the names of its contributors may be used to endorse or promote
++#       products derived from this software without specific prior written
++#       permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++# NON-INFRINGEMENT ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
++# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
++# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
++# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
++# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++#
++
++service vendor.sensors /vendor/bin/sscrpcd sensorspd
++    class early_hal
++    user system
++    group system wakelock
++    capabilities BLOCK_SUSPEND
++    shutdown critical
+diff --git a/vendor.prop b/vendor.prop
+index c53f3e3..83aed6d 100644
+--- a/vendor.prop
++++ b/vendor.prop
+@@ -134,7 +134,13 @@ vendor.audio.feature.record_play_concurency.enable=false
+ vendor.audio.feature.snd_mon.enable=true
+ vendor.audio.feature.spkr_prot.enable=true
+ vendor.audio.feature.src_trkn.enable=true
+-vendor.audio.feature.ssrec.enable=true
++# SSR (录音同步/多声道录音) 由原厂 blob libssrec.so 实现。该 blob 的
++# ssr_check_usecase() 直接解引用 in->device_list，其 struct stream_in 布局
++# 按原厂 Android 13 HAL 编译，与本树重建的 audio.primary.kona.so 不一致
++# → 打开输入流时 SIGSEGV (get_device_types+18) → audioserver 崩溃循环、
++# system_server 卡在 media.audio_policy、开机动画永不结束。
++# 原厂固件里 SSR 本身也关着 (ro.vendor.audio.sdk.ssr=false)，故不加载该库。
++vendor.audio.feature.ssrec.enable=false
+ vendor.audio.feature.usb_offload.enable=true
+ vendor.audio.feature.usb_offload_burst_mode.enable=true
+ vendor.audio.feature.usb_offload_sidetone_volume.enable=false
