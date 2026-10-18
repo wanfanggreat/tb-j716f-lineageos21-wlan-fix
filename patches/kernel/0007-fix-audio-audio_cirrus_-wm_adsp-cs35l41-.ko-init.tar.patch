@@ -1,0 +1,113 @@
+From aba1ca249dd3c1e5eb419e27853805fe64147619 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 15:22:41 +0800
+Subject: [PATCH 07/12] =?UTF-8?q?fix(audio):=20=E6=A8=A1=E5=9D=97=E6=96=87?=
+ =?UTF-8?q?=E4=BB=B6=E5=90=8D=E6=94=B9=E4=B8=BA=20audio=5Fcirrus=5F{wm=5Fa?=
+ =?UTF-8?q?dsp,cs35l41}.ko=EF=BC=8C=E4=B8=8E=20init.target.rc=20=E4=B8=80?=
+ =?UTF-8?q?=E8=87=B4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+问题
+----
+上一次构建（vendorimage rc=0）产出的模块装进了
+/vendor/lib/modules/ 但用的是内核目标名：
+    cs35l41_dlkm.ko / wm_adsp_dlkm.ko
+而设备端 init.target.rc 里写的是：
+    insmod /vendor/lib/modules/audio_cirrus_wm_adsp.ko
+    insmod /vendor/lib/modules/audio_cirrus_cs35l41.ko
+文件名不匹配 → insmod 失败 → 功放仍然不会上电。
+
+原因
+----
+本机型的内核模块安装路径是内核自己的 INSTALL 步骤
+（日志里的 "INSTALL .../xxx_dlkm.ko"），它按 Kbuild 里的
+obj- 目标名原样拷进 $(KERNEL_MODULES_OUT)。
+DLKM 的 Android.mk（LOCAL_MODULE_KBUILD_NAME 重命名机制）
+在本树上并未对这批音频模块生效 —— 证据：设备上现有模块就是
+原始名 wsa883x_dlkm.ko，而不是 audio_wsa883x.ko。
+（audio_machine_kona.ko 带 audio_ 前缀是因为内核侧目标名本身
+就叫 machine_kona 而 INSTALL 前由另一层改名，非 DLKM 机制。）
+
+修复
+----
+直接把 Kbuild 的模块目标名写成固件里的文件名：
+    obj-$(CONFIG_SND_SOC_CS35L41) += audio_cirrus_wm_adsp.o
+    obj-$(CONFIG_SND_SOC_CS35L41) += audio_cirrus_cs35l41.o
+Android.mk 的 LOCAL_MODULE_KBUILD_NAME 同步改为对应名字。
+
+编译验证
+--------
+  MODPOST 2 modules
+  LD [M] audio_cirrus_cs35l41.ko
+  LD [M] audio_cirrus_wm_adsp.ko
+两个文件名与 init.target.rc 完全一致。
+---
+ techpack/audio/asoc/codecs/cs35l41/Android.mk | 14 +++++++++-----
+ techpack/audio/asoc/codecs/cs35l41/Kbuild     | 17 ++++++++++++-----
+ 2 files changed, 21 insertions(+), 10 deletions(-)
+
+diff --git a/techpack/audio/asoc/codecs/cs35l41/Android.mk b/techpack/audio/asoc/codecs/cs35l41/Android.mk
+index 442ef1ce6..8a721c1c1 100644
+--- a/techpack/audio/asoc/codecs/cs35l41/Android.mk
++++ b/techpack/audio/asoc/codecs/cs35l41/Android.mk
+@@ -31,16 +31,20 @@ DLKM_DIR := $(TOP)/device/qcom/common/dlkm
+ # This is set once per LOCAL_PATH, not per (kernel) module
+ KBUILD_OPTIONS := AUDIO_ROOT=$(AUDIO_BLD_DIR)
+ 
+-KBUILD_OPTIONS += MODNAME=cs35l41_dlkm
++KBUILD_OPTIONS += MODNAME=audio_cirrus_cs35l41
+ KBUILD_OPTIONS += BOARD_PLATFORM=$(TARGET_BOARD_PLATFORM)
+ KBUILD_OPTIONS += $(AUDIO_SELECT)
+ 
+ ###########################################################
+-# wm_adsp：提供 wm_adsp2_*/wm_halo_*/wm_adsp_read_ctl 等符号。
+-# 必须先于 cs35l41 加载（设备端 init.target.rc 已按此顺序 insmod）。
++# 模块目标名与固件一致，直接由 Kbuild 产出（见 Kbuild 末尾注释）：
++#   audio_cirrus_wm_adsp.ko  提供 wm_adsp2_*/wm_halo_*/wm_adsp_read_ctl 等符号
++#   audio_cirrus_cs35l41.ko  CS35L41 本体，运行时依赖上面那个
++# 加载顺序（设备端 init.target.rc）也与此一致：先 wm_adsp 后 cs35l41。
++###########################################################
++# wm_adsp（符号提供者）
+ include $(CLEAR_VARS)
+ LOCAL_MODULE              := $(AUDIO_CHIPSET)_cirrus_wm_adsp.ko
+-LOCAL_MODULE_KBUILD_NAME  := wm_adsp_dlkm.ko
++LOCAL_MODULE_KBUILD_NAME  := audio_cirrus_wm_adsp.ko
+ LOCAL_MODULE_TAGS         := optional
+ LOCAL_MODULE_DEBUG_ENABLE := true
+ LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
+@@ -49,7 +53,7 @@ include $(DLKM_DIR)/AndroidKernelModule.mk
+ # CS35L41 本体（4 颗 I2C 智能功放）
+ include $(CLEAR_VARS)
+ LOCAL_MODULE              := $(AUDIO_CHIPSET)_cirrus_cs35l41.ko
+-LOCAL_MODULE_KBUILD_NAME  := cs35l41_dlkm.ko
++LOCAL_MODULE_KBUILD_NAME  := audio_cirrus_cs35l41.ko
+ LOCAL_MODULE_TAGS         := optional
+ LOCAL_MODULE_DEBUG_ENABLE := true
+ LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
+diff --git a/techpack/audio/asoc/codecs/cs35l41/Kbuild b/techpack/audio/asoc/codecs/cs35l41/Kbuild
+index c64245ce1..bb3e41a41 100644
+--- a/techpack/audio/asoc/codecs/cs35l41/Kbuild
++++ b/techpack/audio/asoc/codecs/cs35l41/Kbuild
+@@ -93,8 +93,15 @@ KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/audio-kernel/soc/Module
+ endif
+ 
+ # Module information used by KBuild framework
+-obj-$(CONFIG_SND_SOC_CS35L41) += wm_adsp_dlkm.o
+-wm_adsp_dlkm-y := $(WM_ADSP_OBJS)
+-
+-obj-$(CONFIG_SND_SOC_CS35L41) += cs35l41_dlkm.o
+-cs35l41_dlkm-y := $(CS35L41_OBJS)
++#
++# 模块目标名直接写成固件里的文件名：Kbuild 产出的 .ko 会被内核的
++# INSTALL 步骤原样装进 $(KERNEL_MODULES_OUT)（= /vendor/lib/modules/），
++# 而设备端 init.target.rc 正是按这两个名字 insmod：
++#     insmod /vendor/lib/modules/audio_cirrus_wm_adsp.ko
++#     insmod /vendor/lib/modules/audio_cirrus_cs35l41.ko
++# （本机型并不对模块做重命名：设备上 wsa883x_dlkm.ko 也是原始名）
++obj-$(CONFIG_SND_SOC_CS35L41) += audio_cirrus_wm_adsp.o
++audio_cirrus_wm_adsp-y := $(WM_ADSP_OBJS)
++
++obj-$(CONFIG_SND_SOC_CS35L41) += audio_cirrus_cs35l41.o
++audio_cirrus_cs35l41-y := $(CS35L41_OBJS)

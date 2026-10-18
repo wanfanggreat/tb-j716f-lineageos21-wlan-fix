@@ -1,0 +1,57 @@
+From 49dc142bfbee2ba5815b3121c9ec974aef7b5aea Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 21:49:06 +0800
+Subject: [PATCH 10/10] =?UTF-8?q?fix(fingerprint):=20=E8=A1=A5=20GoodIX=20?=
+ =?UTF-8?q?HAL=20+=20=E6=B3=A8=E5=86=8C=20VINTF=EF=BC=88=E4=BF=AE=E6=AD=A3?=
+ =?UTF-8?q?=20VINTF=20=E5=AE=89=E8=A3=85=E6=96=B9=E5=BC=8F=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- device.mk：补 14 个 GoodIX 指纹文件到 PRODUCT_COPY_FILES
+- device.mk：android.hardware.fingerprint.xml 装到 vendor/etc/permissions
+- manifest.xml：加 android.hardware.biometrics.fingerprint@2.1 声明
+  （VINTF manifest 不能用 PRODUCT_COPY_FILES，build 会直接报错）
+---
+ device.mk    |  4 +++-
+ manifest.xml | 10 ++++++++++
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/device.mk b/device.mk
+index 382256f..eb92be3 100644
+--- a/device.mk
++++ b/device.mk
+@@ -131,9 +131,11 @@ PRODUCT_COPY_FILES += \
+     $(LOCAL_PATH)/prebuilts/stock/lib/vendor.qti.hardware.fingerprint@1.0.so:$(TARGET_COPY_OUT_VENDOR)/lib/vendor.qti.hardware.fingerprint@1.0.so \
+     $(LOCAL_PATH)/prebuilts/stock/etc/init/android.hardware.biometrics.fingerprint@2.1-service.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/android.hardware.biometrics.fingerprint@2.1-service.rc \
+     $(LOCAL_PATH)/prebuilts/stock/etc/permissions/qti_fingerprint_interface.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/qti_fingerprint_interface.xml \
+-    $(LOCAL_PATH)/prebuilts/stock/etc/vintf/manifest/android.hardware.biometrics.fingerprint@2.1-service.xml:$(TARGET_COPY_OUT_VENDOR)/etc/vintf/manifest/android.hardware.biometrics.fingerprint@2.1-service.xml \
+     frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
+ 
++# 指纹 HAL 的 VINTF 声明写在 manifest.xml 里（见该文件 android.hardware.biometrics.fingerprint
++# 条目），不能用 PRODUCT_COPY_FILES 安装 vintf/manifest 下的 xml —— build 会直接报错。
++
+ # Bluetooth
+ PRODUCT_PACKAGES += \
+     android.hardware.bluetooth@1.1.vendor \
+diff --git a/manifest.xml b/manifest.xml
+index 51f6b43..8f6c63a 100644
+--- a/manifest.xml
++++ b/manifest.xml
+@@ -100,6 +100,16 @@
+         <fqname>@2.1::IGoodixFingerprintDaemon/default</fqname>
+         <fqname>@2.1::IGoodixFingerprintDaemonExt/default</fqname>
+     </hal>
++    <!-- 标准指纹 HAL：framework 通过它发现指纹能力；缺这条设置里就没有指纹入口 -->
++    <hal format="hidl">
++        <name>android.hardware.biometrics.fingerprint</name>
++        <transport>hwbinder</transport>
++        <version>2.1</version>
++        <interface>
++            <name>IBiometricsFingerprint</name>
++            <instance>default</instance>
++        </interface>
++    </hal>
+     <hal format="hidl">
+         <name>vendor.lenovo.hardware.battery</name>
+         <transport>hwbinder</transport>

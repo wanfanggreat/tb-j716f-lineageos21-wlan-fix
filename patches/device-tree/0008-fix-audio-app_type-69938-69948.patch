@@ -1,0 +1,46 @@
+From e1347e04e5d73c21eab9a92fd33c32ad17f86942 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 16:56:27 +0800
+Subject: [PATCH 08/10] =?UTF-8?q?fix(audio):=20=E9=87=87=E9=9B=86=20app=5F?=
+ =?UTF-8?q?type=2069938=20->=2069948=EF=BC=8C=E4=BF=AE=E5=A4=8D=E9=BA=A6?=
+ =?UTF-8?q?=E5=85=8B=E9=A3=8E=E6=95=B0=E5=AD=97=E9=9D=99=E9=9F=B3?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+采集 COPP 拓扑 0x10018001（app_type 69938 解析出的那个）在 DSP 侧
+开流成功但数据全零；换成 69948（解析到 0x10010315）后实测正常。
+
+A/B 证据（内核 auddbg_tx_topo 强制覆盖）：
+- 69938 + 0x10018001 -> 静音
+- 69938 + 0x10010315 -> 有信号
+- 69938 + 0x11000003 -> 有信号
+- 69937 / 69948 -> 0x10010315 -> 有信号
+
+详见 TB-J716F/MIC-ROOTCAUSE-batch16.md
+---
+ audio/audio_io_policy.conf | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/audio/audio_io_policy.conf b/audio/audio_io_policy.conf
+index 19562e0..1e9e08d 100644
+--- a/audio/audio_io_policy.conf
++++ b/audio/audio_io_policy.conf
+@@ -88,7 +88,7 @@ inputs {
+     formats AUDIO_FORMAT_PCM_16_BIT
+     sampling_rates 8000|16000|32000|48000|88200|96000|176400|192000
+     bit_width 16
+-    app_type 69938
++    app_type 69948
+   }
+   record_24bit {
+     formats AUDIO_FORMAT_PCM_24_BIT_PACKED|AUDIO_FORMAT_PCM_24_BIT
+@@ -107,7 +107,7 @@ inputs {
+     formats AUDIO_FORMAT_PCM_16_BIT
+     sampling_rates 8000|16000|32000|48000|88200|96000|176400|192000
+     bit_width 16
+-    app_type 69938
++    app_type 69948
+   }
+   record_compress_24 {
+     flags AUDIO_INPUT_FLAG_COMPRESS

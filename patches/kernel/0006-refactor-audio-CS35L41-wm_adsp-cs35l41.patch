@@ -1,0 +1,105 @@
+From eea7c08e09c5b736fe3721acedd5228122d6980d Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:18:42 +0800
+Subject: [PATCH 06/12] =?UTF-8?q?refactor(audio):=20CS35L41=20=E6=8B=86?=
+ =?UTF-8?q?=E6=88=90=20wm=5Fadsp=20+=20cs35l41=20=E4=B8=A4=E4=B8=AA?=
+ =?UTF-8?q?=E6=A8=A1=E5=9D=97=EF=BC=88=E4=B8=8E=E5=8E=9F=E5=8E=82=E4=B8=80?=
+ =?UTF-8?q?=E8=87=B4=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+原厂固件是两个模块协作：
+    audio_cirrus_wm_adsp.ko  提供 wm_adsp2_*/wm_halo_*/wm_adsp_read_ctl 等
+    audio_cirrus_cs35l41.ko  依赖上面那些（符号表里是 U）
+设备端 init.target.rc 也按这个顺序加载：
+    insmod /vendor/lib/modules/audio_cirrus_wm_adsp.ko
+    insmod /vendor/lib/modules/audio_cirrus_cs35l41.ko
+
+上一版把 wm_adsp.o 直接编进 cs35l41_dlkm.o，虽然也能工作，但
+（a）与原厂结构不符，（b）init.target.rc 会 insmod 一个不存在的
+audio_cirrus_wm_adsp.ko 而报错。现改为拆分：
+
+Kbuild:
+    WM_ADSP_OBJS += wm_adsp.o          -> wm_adsp_dlkm.o
+    CS35L41_OBJS += cs35l41.o + i2c + tables   -> cs35l41_dlkm.o
+Android.mk:
+    audio_cirrus_wm_adsp.ko  <- wm_adsp_dlkm.ko
+    audio_cirrus_cs35l41.ko  <- cs35l41_dlkm.ko
+
+编译验证（本机，未刷机）
+------------------------
+  $ make MODNAME=cs35l41_dlkm ... M=.../cs35l41
+  MODPOST 2 modules
+  LD [M] cs35l41_dlkm.ko
+  LD [M] wm_adsp_dlkm.ko
+两者 vermagic 均为 4.19.312-perf+（与本机一致）。
+符号验证：wm_adsp_dlkm.ko 里 wm_halo_init/wm_halo_event/
+wm_adsp_read_ctl/wm_adsp_write_ctl 均为 T（已定义）；
+cs35l41_dlkm.ko 里同名符号均为 U（待外部提供）——
+与两个原厂 ko 的关系完全一致。
+
+安装路径：KERNEL_MODULES_OUT = $(TARGET_OUT_VENDOR)
+→ /vendor/lib/modules/，正是 init.target.rc 期望的位置。
+proprietary-files.txt 未包含任何原厂 .ko，不会互相覆盖。
+---
+ techpack/audio/asoc/codecs/cs35l41/Android.mk | 11 +++++++++++
+ techpack/audio/asoc/codecs/cs35l41/Kbuild     | 13 +++++++++++--
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/techpack/audio/asoc/codecs/cs35l41/Android.mk b/techpack/audio/asoc/codecs/cs35l41/Android.mk
+index f520b4e3d..442ef1ce6 100644
+--- a/techpack/audio/asoc/codecs/cs35l41/Android.mk
++++ b/techpack/audio/asoc/codecs/cs35l41/Android.mk
+@@ -36,6 +36,17 @@ KBUILD_OPTIONS += BOARD_PLATFORM=$(TARGET_BOARD_PLATFORM)
+ KBUILD_OPTIONS += $(AUDIO_SELECT)
+ 
+ ###########################################################
++# wm_adsp：提供 wm_adsp2_*/wm_halo_*/wm_adsp_read_ctl 等符号。
++# 必须先于 cs35l41 加载（设备端 init.target.rc 已按此顺序 insmod）。
++include $(CLEAR_VARS)
++LOCAL_MODULE              := $(AUDIO_CHIPSET)_cirrus_wm_adsp.ko
++LOCAL_MODULE_KBUILD_NAME  := wm_adsp_dlkm.ko
++LOCAL_MODULE_TAGS         := optional
++LOCAL_MODULE_DEBUG_ENABLE := true
++LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
++include $(DLKM_DIR)/AndroidKernelModule.mk
++###########################################################
++# CS35L41 本体（4 颗 I2C 智能功放）
+ include $(CLEAR_VARS)
+ LOCAL_MODULE              := $(AUDIO_CHIPSET)_cirrus_cs35l41.ko
+ LOCAL_MODULE_KBUILD_NAME  := cs35l41_dlkm.ko
+diff --git a/techpack/audio/asoc/codecs/cs35l41/Kbuild b/techpack/audio/asoc/codecs/cs35l41/Kbuild
+index 4679c6635..c64245ce1 100644
+--- a/techpack/audio/asoc/codecs/cs35l41/Kbuild
++++ b/techpack/audio/asoc/codecs/cs35l41/Kbuild
+@@ -44,12 +44,18 @@ COMMON_INC :=	-I$(AUDIO_ROOT)/$(COMMON_DIR)
+ 
+ ############ CS35L41 ############
+ 
+-# for CS35L41 Codec
++# 与原厂固件保持同样的两模块拆分：
++#   audio_cirrus_wm_adsp.ko   —— 提供 wm_adsp2_*/wm_halo_*/wm_adsp_read_ctl 等符号
++#   audio_cirrus_cs35l41.ko   —— CS35L41 本体，运行时依赖上面那个
++# 设备端 init.target.rc 的加载顺序即为此：
++#   insmod audio_cirrus_wm_adsp.ko
++#   insmod audio_cirrus_cs35l41.ko
+ ifdef CONFIG_SND_SOC_CS35L41
++	WM_ADSP_OBJS += wm_adsp.o
++
+ 	CS35L41_OBJS += cs35l41.o
+ 	CS35L41_OBJS += cs35l41-i2c.o
+ 	CS35L41_OBJS += cs35l41-tables.o
+-	CS35L41_OBJS += wm_adsp.o
+ endif
+ 
+ LINUX_INC +=	-Iinclude/linux
+@@ -87,5 +93,8 @@ KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/audio-kernel/soc/Module
+ endif
+ 
+ # Module information used by KBuild framework
++obj-$(CONFIG_SND_SOC_CS35L41) += wm_adsp_dlkm.o
++wm_adsp_dlkm-y := $(WM_ADSP_OBJS)
++
+ obj-$(CONFIG_SND_SOC_CS35L41) += cs35l41_dlkm.o
+ cs35l41_dlkm-y := $(CS35L41_OBJS)

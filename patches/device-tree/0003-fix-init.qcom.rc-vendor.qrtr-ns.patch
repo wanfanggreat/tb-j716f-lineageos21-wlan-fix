@@ -1,8 +1,8 @@
 From 32c9d56beb85033035997f5d3d084239f23e4a7d Mon Sep 17 00:00:00 2001
 From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 19:19:06 +0800
-Subject: [PATCH 3/7] =?UTF-8?q?fix:=20=E8=A1=A5=E5=9B=9E=20init.qcom.rc=20?=
- =?UTF-8?q?=E7=BC=BA=E5=A4=B1=E7=9A=84=20vendor.qrtr-ns=20=E6=9C=8D?=
+Subject: [PATCH 03/10] =?UTF-8?q?fix:=20=E8=A1=A5=E5=9B=9E=20init.qcom.rc?=
+ =?UTF-8?q?=20=E7=BC=BA=E5=A4=B1=E7=9A=84=20vendor.qrtr-ns=20=E6=9C=8D?=
  =?UTF-8?q?=E5=8A=A1=E5=AE=9A=E4=B9=89?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

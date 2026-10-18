@@ -1,0 +1,46 @@
+From ce7612fdbe08ff005f0ed8e913d43c6859e65a41 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 17:41:15 +0800
+Subject: [PATCH 10/12] =?UTF-8?q?fix(audio):=20cs35l41=20=E8=A1=A5?=
+ =?UTF-8?q?=E5=9B=9E=20AMP=20Enable=20=E6=8E=A7=E4=BB=B6=EF=BC=884=20?=
+ =?UTF-8?q?=E6=89=AC=E5=8F=AA=E5=93=8D=202=20=E4=B8=AA=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mixer_paths.xml 的 speaker 路径里有：
+    <ctl name="SPKn AMP Enable Switch" value="1" />
+但我们的驱动没有 "AMP Enable" 控件，audio_route 对不存在的控件
+静默跳过 —— 4 颗功放的使能从未被打开。默认就有通路的那两颗能响，
+另外两颗始终静音。
+
+原厂实现（audio_cirrus_cs35l41.ko 的 cs35l41_gpi_glob_en_put）是把值
+写进 0x1303C（CS35L41_DSP_VIRT1_MBOX_8，Halo DSP 的 GPI 全局使能字），
+get 读缓存。这里用 SOC_SINGLE 达到同样效果；控件名 "AMP Enable"
+与 name_prefix 组合后即为 mixer 里的 "SPKn AMP Enable Switch"。
+---
+ techpack/audio/asoc/codecs/cs35l41/cs35l41.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/techpack/audio/asoc/codecs/cs35l41/cs35l41.c b/techpack/audio/asoc/codecs/cs35l41/cs35l41.c
+index b429f69b1..8d672c7f2 100644
+--- a/techpack/audio/asoc/codecs/cs35l41/cs35l41.c
++++ b/techpack/audio/asoc/codecs/cs35l41/cs35l41.c
+@@ -595,6 +595,17 @@ static const struct snd_kcontrol_new cs35l41_aud_controls[] = {
+ 			  0x4CF, 0x391, dig_vol_tlv),
+ 	SOC_SINGLE_TLV("AMP PCM Gain", CS35L41_AMP_GAIN_CTRL, 5, 0x14, 0,
+ 		       amp_gain_tlv),
++	/*
++	 * "AMP Enable"：原厂驱动有这个控件，我们的没有，导致 mixer_paths.xml
++	 * speaker 路径里的 <ctl name="SPKn AMP Enable Switch" value="1" />
++	 * 全被 audio_route 静默跳过 —— 4 颗功放的使能从未打开，只有默认就通路
++	 * 的两颗出声。
++	 *
++	 * 原厂实现（audio_cirrus_cs35l41.ko 反汇编 cs35l41_gpi_glob_en_put）：
++	 * 把值写进 0x1303C（CS35L41_DSP_VIRT1_MBOX_8），即 Halo DSP 的
++	 * GPI 全局使能字；get 回调读缓存里的同一个值。
++	 */
++	SOC_SINGLE("AMP Enable", CS35L41_DSP_VIRT1_MBOX_8, 0, 1, 0),
+ 	SOC_SINGLE_RANGE("ASPTX1 Slot Position", CS35L41_SP_FRAME_TX_SLOT, 0, 0,
+ 			 7, 0),
+ 	SOC_SINGLE_RANGE("ASPTX2 Slot Position", CS35L41_SP_FRAME_TX_SLOT, 8, 0,

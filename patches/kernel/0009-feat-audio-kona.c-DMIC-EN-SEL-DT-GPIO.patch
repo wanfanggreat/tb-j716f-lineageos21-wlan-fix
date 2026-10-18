@@ -1,0 +1,174 @@
+From f2d94dc423375a01b4ea19f82f144c581bba1643 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 16:58:46 +0800
+Subject: [PATCH 09/12] =?UTF-8?q?feat(audio):=20kona.c=20=E8=A1=A5=20DMIC?=
+ =?UTF-8?q?=20EN/SEL=20=E6=8E=A7=E4=BB=B6=E4=B8=8E=20DT=20GPIO=20=E8=A7=A3?=
+ =?UTF-8?q?=E6=9E=90?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+原厂 mixer_paths.xml 的 dmic1/dmic2 路径会写 DMIC EN/DMIC SEL 两个控件，
+我们这版 kona.c 缺失，audio_route 静默跳过，外部 MIC 阵列的使能/选择脚
+不受控。
+
+从原厂 audio_machine_kona.ko 反汇编确认实现方式：
+- DT 属性 qcom.msm-dmic-en-gpio（点号）/ qcom,msm-dmic-sel-gpio（逗号）
+- put 回调走 gpiod_direction_output_raw，之后 usleep 5ms
+- 控件必须是 ENUM（audio_route 对 BOOL 用 strtol，On/Off 都会变 0）
+
+设备实测：gpio 1093(EN)/1085(SEL) 申请成功，SEL 开机置 On（与原厂一致）。
+注：这不是麦克风数字静音的最终原因（真因见采集拓扑 0x10018001），
+但缺了这两个控件时 DMIC 阵列的使能脚完全不受控，属于必须补的功能。
+---
+ techpack/audio/asoc/kona.c | 122 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 122 insertions(+)
+
+diff --git a/techpack/audio/asoc/kona.c b/techpack/audio/asoc/kona.c
+index c9d166a36..1378e1557 100644
+--- a/techpack/audio/asoc/kona.c
++++ b/techpack/audio/asoc/kona.c
+@@ -183,6 +183,11 @@ enum {
+ struct msm_asoc_mach_data {
+ 	struct snd_info_entry *codec_root;
+ 	int usbc_en2_gpio; /* used by gpio driver API */
++	/* 外部麦克风阵列的使能/选择 GPIO（原厂 kona.c 有，我们这版没有）
++	 * DT: qcom.msm-dmic-en-gpio (注意是点号) / qcom,msm-dmic-sel-gpio
++	 * 由 mixer 控件 "DMIC EN"/"DMIC SEL" 驱动，采音路径 dmic1/dmic2 会设置。 */
++	int dmic_en_gpio;
++	int dmic_sel_gpio;
+ 	int lito_v2_enabled;
+ 	struct device_node *dmic01_gpio_p; /* used by pinctrl API */
+ 	struct device_node *dmic23_gpio_p; /* used by pinctrl API */
+@@ -3768,7 +3773,92 @@ static const struct snd_kcontrol_new msm_int_wcd937x_snd_controls[] = {
+ 			cdc_dma_rx_sample_rate_put),
+ };
+ 
++/*
++ * 外部 MIC 阵列使能/选择。原厂 mixer_paths.xml 里 dmic1/dmic2 路径会写：
++ *   <ctl name="DMIC EN"  value="Off" />
++ *   <ctl name="DMIC SEL" value="On"  />
++ * 这两个控件在我们的 kona.c 里缺失，导致 audio_route 静默跳过、外部 MIC
++ * 阵列一直没上电 —— 采集数据全是数字静音（DSP 侧开流却是成功的）。
++ * 2026-10-17 补：控件类型必须是 ENUM（audio_route 对 BOOL 用 strtol，
++ * "On"/"Off" 都会变成 0）。
++ */
++static const char *const msm_dmic_en_text[] = {"Off", "On"};
++static SOC_ENUM_SINGLE_EXT_DECL(msm_dmic_en_enum, msm_dmic_en_text);
++static const char *const msm_dmic_sel_text[] = {"Off", "On"};
++static SOC_ENUM_SINGLE_EXT_DECL(msm_dmic_sel_enum, msm_dmic_sel_text);
++
++static int msm_mic_en_get(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component =
++				snd_soc_kcontrol_component(kcontrol);
++	struct msm_asoc_mach_data *pdata =
++				snd_soc_card_get_drvdata(component->card);
++
++	ucontrol->value.enumerated.item[0] =
++		gpio_is_valid(pdata->dmic_en_gpio) ?
++			!!gpio_get_value(pdata->dmic_en_gpio) : 0;
++	return 0;
++}
++
++static int msm_mic_en_put(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component =
++				snd_soc_kcontrol_component(kcontrol);
++	struct msm_asoc_mach_data *pdata =
++				snd_soc_card_get_drvdata(component->card);
++	unsigned int val = ucontrol->value.enumerated.item[0] ? 1 : 0;
++
++	dev_info(component->dev, "%s: DMIC EN (gpio %d) <- %u\n",
++		 __func__, pdata->dmic_en_gpio, val);
++	if (!gpio_is_valid(pdata->dmic_en_gpio))
++		return 0;
++
++	gpio_direction_output(pdata->dmic_en_gpio, val);
++	/* 与原厂一致：给外部 MIC 阵列 5ms 稳定时间 */
++	usleep_range(5000, 5010);
++	return 0;
++}
++
++static int msm_mic_sel_get(struct snd_kcontrol *kcontrol,
++			   struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component =
++				snd_soc_kcontrol_component(kcontrol);
++	struct msm_asoc_mach_data *pdata =
++				snd_soc_card_get_drvdata(component->card);
++
++	ucontrol->value.enumerated.item[0] =
++		gpio_is_valid(pdata->dmic_sel_gpio) ?
++			!!gpio_get_value(pdata->dmic_sel_gpio) : 0;
++	return 0;
++}
++
++static int msm_mic_sel_put(struct snd_kcontrol *kcontrol,
++			   struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component =
++				snd_soc_kcontrol_component(kcontrol);
++	struct msm_asoc_mach_data *pdata =
++				snd_soc_card_get_drvdata(component->card);
++	unsigned int val = ucontrol->value.enumerated.item[0] ? 1 : 0;
++
++	dev_info(component->dev, "%s: DMIC SEL (gpio %d) <- %u\n",
++		 __func__, pdata->dmic_sel_gpio, val);
++	if (!gpio_is_valid(pdata->dmic_sel_gpio))
++		return 0;
++
++	gpio_direction_output(pdata->dmic_sel_gpio, val);
++	usleep_range(5000, 5010);
++	return 0;
++}
++
+ static const struct snd_kcontrol_new msm_common_snd_controls[] = {
++	SOC_ENUM_EXT("DMIC EN", msm_dmic_en_enum,
++			msm_mic_en_get, msm_mic_en_put),
++	SOC_ENUM_EXT("DMIC SEL", msm_dmic_sel_enum,
++			msm_mic_sel_get, msm_mic_sel_put),
+ 	SOC_ENUM_EXT("USB_AUDIO_RX SampleRate", usb_rx_sample_rate,
+ 			usb_audio_rx_sample_rate_get,
+ 			usb_audio_rx_sample_rate_put),
+@@ -8925,6 +9015,38 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
+ 	 * entry is not found in DT file as some targets do not support
+ 	 * US-Euro detection
+ 	 */
++	/* 外部 MIC 阵列 GPIO（原厂 DT 里 EN 用的是点号，SEL 用逗号） */
++	pdata->dmic_en_gpio = of_get_named_gpio(pdev->dev.of_node,
++						"qcom.msm-dmic-en-gpio", 0);
++	if (pdata->dmic_en_gpio < 0)
++		pdata->dmic_en_gpio = of_get_named_gpio(pdev->dev.of_node,
++						"qcom,msm-dmic-en-gpio", 0);
++	if (gpio_is_valid(pdata->dmic_en_gpio)) {
++		ret = gpio_request(pdata->dmic_en_gpio, "dmic_en_gpio");
++		if (ret)
++			dev_err(&pdev->dev, "%s: dmic en gpio %d request failed %d\n",
++				__func__, pdata->dmic_en_gpio, ret);
++		else
++			dev_info(&pdev->dev, "%s: dmic en gpio = %d\n",
++				 __func__, pdata->dmic_en_gpio);
++	} else {
++		dev_dbg(&pdev->dev, "property qcom.msm-dmic-en-gpio not found\n");
++	}
++
++	pdata->dmic_sel_gpio = of_get_named_gpio(pdev->dev.of_node,
++						 "qcom,msm-dmic-sel-gpio", 0);
++	if (gpio_is_valid(pdata->dmic_sel_gpio)) {
++		ret = gpio_request(pdata->dmic_sel_gpio, "dmic_sel_gpio");
++		if (ret)
++			dev_err(&pdev->dev, "%s: dmic sel gpio %d request failed %d\n",
++				__func__, pdata->dmic_sel_gpio, ret);
++		else
++			dev_info(&pdev->dev, "%s: dmic sel gpio = %d\n",
++				 __func__, pdata->dmic_sel_gpio);
++	} else {
++		dev_dbg(&pdev->dev, "property qcom,msm-dmic-sel-gpio not found\n");
++	}
++
+ 	pdata->us_euro_gpio_p = of_parse_phandle(pdev->dev.of_node,
+ 					"qcom,us-euro-gpios", 0);
+ 	if (!pdata->us_euro_gpio_p) {

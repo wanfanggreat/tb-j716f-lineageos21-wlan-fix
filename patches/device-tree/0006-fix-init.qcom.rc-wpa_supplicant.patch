@@ -1,8 +1,8 @@
 From a49600ae0d679e62477de52eb27b78ba39b4a3d9 Mon Sep 17 00:00:00 2001
 From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 22:34:55 +0800
-Subject: [PATCH 6/7] =?UTF-8?q?fix:=20=E7=A7=BB=E9=99=A4=20init.qcom.rc=20?=
- =?UTF-8?q?=E9=87=8C=E7=AC=AC=E4=BA=8C=E4=BB=BD=20wpa=5Fsupplicant=20?=
+Subject: [PATCH 06/10] =?UTF-8?q?fix:=20=E7=A7=BB=E9=99=A4=20init.qcom.rc?=
+ =?UTF-8?q?=20=E9=87=8C=E7=AC=AC=E4=BA=8C=E4=BB=BD=20wpa=5Fsupplicant=20?=
  =?UTF-8?q?=E5=AE=9A=E4=B9=89=EF=BC=88=E5=90=8C=E5=90=8D=E5=86=B2=E7=AA=81?=
  =?UTF-8?q?=EF=BC=89?=
 MIME-Version: 1.0

@@ -1,7 +1,7 @@
 From 8b250d7d1d39ec7fef6c839cfb8bf55d0000d4f6 Mon Sep 17 00:00:00 2001
 From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 11:33:44 +0800
-Subject: [PATCH 2/3] =?UTF-8?q?fix(audio):=20kona=20=E5=A3=B0=E5=8D=A1?=
+Subject: [PATCH 02/12] =?UTF-8?q?fix(audio):=20kona=20=E5=A3=B0=E5=8D=A1?=
  =?UTF-8?q?=E4=B8=8D=E5=86=8D=E6=8C=82=E8=BD=BD=20wsa=5Fmacro=20DAI?=
  =?UTF-8?q?=EF=BC=8C=E5=B9=B6=E4=BF=AE=20mic-bias=20=E7=94=B5=E5=8E=8B?=
  =?UTF-8?q?=E5=B1=9E=E6=80=A7?=

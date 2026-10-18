@@ -1,0 +1,185 @@
+From af153780a33fb396bb165809176319c9084b5594 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:15:00 +0800
+Subject: [PATCH 05/12] =?UTF-8?q?feat(audio):=20kona.c=20=E6=94=AF?=
+ =?UTF-8?q?=E6=8C=81=20cirrus,prince-devs=20=E2=80=94=E2=80=94=20=E6=8A=8A?=
+ =?UTF-8?q?=204=20=E9=A2=97=20CS35L41=20=E6=8C=82=E8=BF=9B=E5=A3=B0?=
+ =?UTF-8?q?=E5=8D=A1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+问题
+----
+上一步移植了驱动，但功放仍不会出现在声卡上。原因：
+设备 DT 用
+    cirrus,prince-max-devs = <0x04>;
+    cirrus,prince-devs = <0x45 0x46 0x47 0x48>;
+    cirrus,prince-dev-prefix = "SPK1\0SPK2\0SPK3\0SPK4";
+声明这 4 颗功放，而 msm_init_aux_dev() 只解析
+qcom,codec-aux-devs（本平台该值为 1 个，指 bolero_codec）。
+prince-devs 无人读取 → 4 个 component 虽能 probe，却不会被挂进声卡
+→ 其控件不会注册到声卡 → mixer_paths.xml 的
+"SPK1..4 AMP PCM Gain" / "SPK1..4 PCM Source" 等依然取不到。
+
+本树与小米树 kona.c 均无 prince 处理，属原厂私有改动，故自行实现。
+
+改动（techpack/audio/asoc/kona.c，msm_init_aux_dev）
+---------------------------------------------------
+1. 读取 cirrus,prince-max-devs / cirrus,prince-devs，
+   用 of_count_phandle_with_args 数出实际 phandle 数；
+2. 逐个 of_parse_phandle + soc_find_component_locked 确认对应
+   ASoC component 已注册（未就绪则 -EPROBE_DEFER，与既有
+   qcom,codec-aux-devs 的处理保持一致）；
+3. card->num_aux_devs / num_configs 改为
+   wsa_max_devs + codec_aux_dev_cnt + prince_max_devs，
+   三个来源各自计数、顺序追加，互不覆盖；
+4. 为每颗功放填 msm_aux_dev[]（codec_of_node + msm_aux_codec_init）
+   与 msm_codec_conf[]，其中关键的一步是把
+   cirrus,prince-dev-prefix 的第 i 项写进 name_prefix ——
+   ASoC 会用 "%s %s" 把它拼到控件名前，于是驱动里的
+   "AMP PCM Gain" / "PCM Source" 在声卡上就变成
+   "SPK1 AMP PCM Gain" / "SPK1 PCM Source"，正好对上 mixer_paths.xml。
+
+附带说明（曾一度误判为阻塞点）
+------------------------------
+mixer_paths.xml 里的 "SPK1 AMP Enable Switch" 在小米版驱动中不存在
+（原厂 blob 有，属版本差异）。但功放并不依赖该控件上电：
+驱动 DAPM 里的路由是
+    "SPK" -> "Main AMP" -> "ASPTX Ref"/"CLASS H"/"DRE"
+而 "Main AMP" 是 DAPM_OUT_DRV_E widget，绑定了 cs35l41_main_amp_event，
+在卡片把音频路由到 "SPK" 时由 DAPM 自动上电。
+"AMP Enable Switch" 只是原厂额外的手动开关，非必需。
+
+编译验证（本机，未刷机）
+------------------------
+  $ make techpack/audio/
+  退出码 0，零 error 零 warning（首次因多了一个无人引用的
+  prince_aux_dev 标签触发 -Werror,-Wunused-label，已删除该标签）
+  kona.o 与 machine_dlkm.o 均已重新生成，含 "prince-devs" 与
+  "cirrus,prince-dev-prefix" 字符串。
+---
+ techpack/audio/asoc/kona.c | 92 +++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 90 insertions(+), 2 deletions(-)
+
+diff --git a/techpack/audio/asoc/kona.c b/techpack/audio/asoc/kona.c
+index 27d36f07b..c1da069b8 100644
+--- a/techpack/audio/asoc/kona.c
++++ b/techpack/audio/asoc/kona.c
+@@ -8010,9 +8010,13 @@ static int msm_init_aux_dev(struct platform_device *pdev,
+ 	u32 wsa_dev_cnt;
+ 	u32 codec_max_aux_devs = 0;
+ 	u32 codec_aux_dev_cnt = 0;
++	u32 prince_max_devs = 0;
++	u32 prince_dev_cnt = 0;
++	u32 prince_found = 0;
+ 	int i;
+ 	struct msm_wsa881x_dev_info *wsa881x_dev_info = NULL;
+ 	struct aux_codec_dev_info *aux_cdc_dev_info = NULL;
++	struct aux_codec_dev_info *prince_dev_info = NULL;
+ 	const char *auxdev_name_prefix[1];
+ 	char *dev_name_str = NULL;
+ 	int found = 0;
+@@ -8219,9 +8223,72 @@ codec_aux_dev:
+ 		"%s: found %d AUX codecs registered with ALSA core\n",
+ 		__func__, codecs_found);
+ 
++	/*
++	 * Cirrus Logic CS35L41 智能功放（TB-J716F：4 颗 I2C smart amp）。
++	 * 这些器件由 DT 的 cirrus,prince-devs 列出（每项一个 phandle），
++	 * 并用 cirrus,prince-dev-prefix 给出各自前缀（"SPK1".."SPK4"）。
++	 * 前缀经 msm_codec_conf[].name_prefix 交给 ASoC，控件名会变成
++	 * "SPK1 AMP PCM Gain" 这样，正好对上 mixer_paths.xml。
++	 * 注意：prince 是独立于 qcom,codec-aux-devs 的另一组 aux device，
++	 * 两者各自计数、追加到同一张 aux_dev 数组末尾。
++	 */
++	ret = of_property_read_u32(pdev->dev.of_node,
++				   "cirrus,prince-max-devs", &prince_max_devs);
++	if (ret || prince_max_devs == 0)
++		goto aux_dev_register;
++
++	prince_dev_cnt = of_count_phandle_with_args(pdev->dev.of_node,
++						    "cirrus,prince-devs", NULL);
++	if (prince_dev_cnt <= 0) {
++		dev_err(&pdev->dev,
++			"%s: Error reading prince devices from DT, cnt=%d\n",
++			__func__, prince_dev_cnt);
++		prince_max_devs = 0;
++		goto aux_dev_register;
++	}
++
++	if (prince_dev_cnt < prince_max_devs)
++		prince_max_devs = prince_dev_cnt;
++
++	prince_dev_info = devm_kcalloc(&pdev->dev, prince_dev_cnt,
++				       sizeof(struct aux_codec_dev_info),
++				       GFP_KERNEL);
++	if (!prince_dev_info) {
++		ret = -ENOMEM;
++		goto err;
++	}
++
++	for (i = 0; i < prince_dev_cnt; i++) {
++		aux_codec_of_node = of_parse_phandle(pdev->dev.of_node,
++						     "cirrus,prince-devs", i);
++		if (unlikely(!aux_codec_of_node)) {
++			dev_err(&pdev->dev,
++				"%s: prince dev node %d is not present\n",
++				__func__, i);
++			ret = -EINVAL;
++			goto err;
++		}
++		if (soc_find_component_locked(aux_codec_of_node, NULL)) {
++			prince_dev_info[prince_found].of_node =
++							aux_codec_of_node;
++			prince_dev_info[prince_found].index = i;
++			prince_found++;
++		}
++	}
++
++	if (prince_found < prince_dev_cnt) {
++		dev_dbg(&pdev->dev,
++			"%s: prince: failed to find %d components, found %d\n",
++			__func__, prince_dev_cnt, prince_found);
++		return -EPROBE_DEFER;
++	}
++	dev_info(&pdev->dev,
++		 "%s: found %d prince (CS35L41) codecs registered\n",
++		 __func__, prince_found);
++
+ aux_dev_register:
+-	card->num_aux_devs = wsa_max_devs + codec_aux_dev_cnt;
+-	card->num_configs = wsa_max_devs + codec_aux_dev_cnt;
++	card->num_aux_devs = wsa_max_devs + codec_aux_dev_cnt + prince_max_devs;
++	card->num_configs = wsa_max_devs + codec_aux_dev_cnt + prince_max_devs;
+ 
+ 	/* Alloc array of AUX devs struct */
+ 	msm_aux_dev = devm_kcalloc(&pdev->dev, card->num_aux_devs,
+@@ -8286,6 +8353,27 @@ aux_dev_register:
+ 				aux_cdc_dev_info[i].of_node;
+ 	}
+ 
++	for (i = 0; i < prince_max_devs; i++) {
++		int idx = wsa_max_devs + codec_aux_dev_cnt + i;
++		const char *prince_prefix = NULL;
++
++		if (of_property_read_string_index(pdev->dev.of_node,
++						  "cirrus,prince-dev-prefix",
++						  prince_dev_info[i].index,
++						  &prince_prefix))
++			prince_prefix = NULL;
++
++		msm_aux_dev[idx].name = NULL;
++		msm_aux_dev[idx].codec_name = NULL;
++		msm_aux_dev[idx].codec_of_node = prince_dev_info[i].of_node;
++		msm_aux_dev[idx].init = msm_aux_codec_init;
++		msm_codec_conf[idx].dev_name = NULL;
++		msm_codec_conf[idx].name_prefix = prince_prefix;
++		msm_codec_conf[idx].of_node = prince_dev_info[i].of_node;
++		dev_info(&pdev->dev, "%s: prince amp %d prefix = %s\n",
++			 __func__, i, prince_prefix ? prince_prefix : "(none)");
++	}
++
+ 	card->codec_conf = msm_codec_conf;
+ 	card->aux_dev = msm_aux_dev;
+ err:

@@ -1,13 +1,14 @@
 # Lenovo TB-J716F (p11_pro_plus) — LineageOS 21 修复集
 
 联想小新 Pad Pro 2021（TB-J716F / 代号 `p11_pro_plus`，Snapdragon 870 / SM8250-AC）
-在 LineageOS 21（Android 14）上的移植修复记录：**WLAN、传感器栈、音频**。
+在 LineageOS 21（Android 14）上的移植修复记录：**WLAN、传感器栈、音频（含 4 颗
+CS35L41 扬声器功放）、指纹**。
 
 本仓库包含完整的排查过程与修复所需的全部源码改动（补丁形式）。
 
-> **状态：全部缺陷已修复并经真机验证。**
+> **状态：下列缺陷均已修复并经真机验证。**
 > 设备稳定运行、WiFi 可扫描到 AP、45 个传感器全部在位、声卡已注册、
-> 12 个 HAL 服务全 running。
+> 麦克风采集正常、4 扬声器全部出声、指纹可用。
 > 目标读者：为同一台设备（或其他 SM8250 设备）编译 LineageOS 的开发者。
 
 ---
@@ -15,8 +16,12 @@
 ## 问题全貌
 
 表面现象各不相同，实际可分为几组**互相独立**的缺陷。
-其中一条贯穿始终的线索是：**用原厂 blob 覆盖自编 AOSP 组件，导致 ABI 或
-HAL 接口版本（HIDL vs AIDL）不匹配**。
+其中两条贯穿始终的线索是：
+
+1. **用原厂 blob 覆盖自编 AOSP 组件**，导致 ABI 或 HAL 接口版本
+   （HIDL vs AIDL）不匹配；
+2. **VINTF 重复声明**——AOSP 模块已自带 fragment，又在 `manifest.xml`
+   手写一份，导致 manifest 解析失败、卡第一屏。
 
 ### 第一组：WLAN（4 个缺陷）
 
@@ -31,27 +36,50 @@ HAL 接口版本（HIDL vs AIDL）不匹配**。
 覆盖了我们自编的 AOSP 组件，而原厂组件与框架声明的 HAL 接口
 **版本/传输方式不匹配**（HIDL vs AIDL）。
 
-### 第二组：传感器 + 音频（3 个缺陷）
+### 第二组：传感器栈（3 个缺陷）
 
 | # | 缺陷 | 层次 | 症状 | 提交 |
 |---|---|---|---|---|
 | 5 | 传感器栈缺失（SSC blob 未打包） | HAL | `dumpsys sensorservice` 报 **No Sensors on the device** | `22cfba36` |
 | 6 | VINTF 重复声明同一 sensors HAL | VINTF | **卡第一屏**（无开机动画，无 panic） | `22cfba36` |
-| 7 | 内核 DAI 链引用不存在的 wsa-macro | 内核音频 | `/proc/asound/cards` 为空，**无声卡** | `8b250d7d` |
-| 8 | 原厂 `libssrec.so` 与重建 HAL 的 ABI 不匹配 | HAL | audioserver **崩溃循环**，卡开机动画 | `22cfba36` |
-| 9 | 跳过 WSA 链路时漏掉 `msm_int_audrx_init` | 内核音频 | **麦克风采集失效**（录音是静音），上一修复引入的回归 | `b8e1bed9` |
+| 7 | 原厂 `libssrec.so` 与重建 HAL 的 ABI 不匹配 | HAL | audioserver **崩溃循环**，卡开机动画 | `22cfba36` |
 
-缺陷 6 是个高频陷阱，值得单独记住：**AOSP 模块自带的 VINTF fragment
-不能又在 `manifest.xml` 里手写一遍**，否则 libvintf 判定 `Conflicting FqInstance`，
-整个 vendor manifest 解析失败。而且它**卡在第一屏、pstore 却是空的**——
-用"有没有内核 panic"来区分根因在这里会失效。
+### 第三组：音频内核与功放（4 个缺陷）
 
-缺陷 8 与 WLAN 那组同源：原厂 blob 与本树重建的 HAL 共享结构体定义时
-就有 ABI 风险。**判断手法**：tombstone backtrace 里出现
-`/vendor/lib/*.so`（原厂 blob）与 `/vendor/lib/hw/*.so`（重建 HAL）交替，
-优先怀疑 ABI 而非逻辑 bug。
+| # | 缺陷 | 层次 | 症状 | 提交 |
+|---|---|---|---|---|
+| 8 | 内核 DAI 链引用不存在的 wsa-macro | 内核音频 | `/proc/asound/cards` 为空，**无声卡** | `8b250d7d` |
+| 9 | 跳过 WSA 链路时漏掉 `msm_int_audrx_init` | 内核音频 | **麦克风采集失效**（录音是静音） | `b8e1bed9` |
+| 10 | 采集 `app_type` 用错（69938） | 音频 HAL 配置 | 麦克风**数字静音**（能出文件但全 0） | `e1347e04` |
+| 11 | 缺少 `SPKn AMP Enable Switch` 控件 | 内核功放 | 4 扬声器**只响 2 个** | `ed5347ca6` |
+
+> 缺陷 9 是缺陷 8 引入的回归，两个补丁需一并应用。
+> 缺陷 11 的接口规格来自对原厂 `audio_cirrus_cs35l41.ko` 的反汇编
+> （`SOC_SINGLE` 不补 " Switch" 后缀；原厂用 `regmap_write` 而非读改写）。
+> 该修复经历了一次 Revert 后重做，补丁集中保留了完整的 Revert 对。
+
+### 第四组：指纹（2 个缺陷）
+
+| # | 缺陷 | 层次 | 症状 | 提交 |
+|---|---|---|---|---|
+| 12 | GoodIX 指纹 HAL 与 qfp-daemon 全漏提取 | vendor | 设置里**没有指纹入口** | `07a8bb224` |
+| 13 | 指纹 HAL 的 VINTF 安装/声明方式错误 | VINTF | 重复声明 → **卡第一屏** | `49dc142bf` |
+
+缺陷 13 与缺陷 6 是同一个坑的第二次出现：AOSP 的
+`android.hardware.biometrics.fingerprint@2.1-service` 模块自带
+`vintf_fragments`，不能又在 `manifest.xml` 里手写一遍。
+
+### 反复踩到的两个坑（值得记住）
+
+- **卡第一屏 ≠ 内核 panic。** 缺陷 6、7、13 都表现为卡屏，但 pstore 为空。
+  分别是 VINTF 解析失败、HAL 崩溃循环、VINTF 重复声明。
+  **必须靠 logcat 区分现象相近的问题**，不能只看 pstore。
+- **判断 ABI 类问题的特征**：tombstone backtrace 里
+  `/vendor/lib/*.so`（原厂 blob）与 `/vendor/lib/hw/*.so`（重建 HAL）交替出现，
+  优先怀疑 ABI 而非逻辑 bug。本设备已出现 3 次同类模式。
 
 ### 最终验证结果（真机实测）
+
 
 ```
 sys.boot_completed                        1
@@ -252,21 +280,33 @@ $ uptime                                     217s+（历史 panic 点在 126s）
 
 ```
 patches/
-  device-tree/          设备树仓库的 7 个提交
+  device-tree/          设备树仓库的 10 个提交
     0001  修复 wlan 固件符号链导致的 vendorimage 缺源
     0002  补齐基础 WCNSS 配置（内置驱动所需）
     0003  补回 init.qcom.rc 缺失的 vendor.qrtr-ns 服务定义      ← 缺陷 1
     0004  不再用原厂 libwifi-hal.so blob 覆盖                   ← 缺陷 2
     0005  不再用原厂 HIDL blob 覆盖 AIDL 服务栈（supplicant/hostapd） ← 缺陷 3
     0006  移除 init.qcom.rc 里第二份 wpa_supplicant 定义        ← 缺陷 4
-    0007  补齐 SSC 传感器栈、修开机卡首屏与无声卡               ← 缺陷 5/6/8
-  kernel/               内核仓库的 3 个提交
+    0007  补齐 SSC 传感器栈、修开机卡首屏与无声卡               ← 缺陷 5/6/7
+    0008  采集 app_type 69938 -> 69948，修复麦克风数字静音       ← 缺陷 10
+    0009  补回 GoodIX 指纹 HAL 与 qfp-daemon                    ← 缺陷 12
+    0010  GoodIX 指纹 HAL 注册 VINTF（修正安装方式）             ← 缺陷 13
+  kernel/               内核仓库的 12 个提交
     0001  kona-perf: WLAN 驱动改为模块构建
-    0002  kona 声卡不再挂载 wsa_macro DAI，并修 mic-bias 电压属性 ← 缺陷 7
+    0002  kona 声卡不再挂载 wsa_macro DAI，并修 mic-bias 电压属性 ← 缺陷 8
     0003  麦克风采集失效：msm_int_audrx_init 从 WSA 链路迁到 RX 链路 ← 缺陷 9
+    0004  移植 CS35L41 扬声器功放驱动（4 颗 I2C smart amp）      ← 缺陷 11
+    0005  kona.c 支持 cirrus,prince-devs —— 把 4 颗 CS35L41 挂进声卡
+    0006  拆分 CS35L41 为 wm_adsp + cs35l41 两个模块（与原厂一致）
+    0007  模块文件名改为 audio_cirrus_{wm_adsp,cs35l41}.ko
+    0008  功放改走 BE dai_link，修首屏 panic 循环
+    0009  kona.c 补 DMIC EN/SEL 控件与 DT GPIO 解析
+    0010  补回 AMP Enable 控件（第一版，随后被 Revert）
+    0011  Revert "补回 AMP Enable 控件"                        ← 保留完整历史
+    0012  补回 AMP Enable Switch 控件（4 扬只响 2 个）           ← 缺陷 11 的最终修复
 docs/
   fix-report-final.md         WLAN 完整修复报告（缺陷 1~4 + 真机验证）
-  fix-report-sensors-audio.md 传感器/音频修复报告（缺陷 5~9 + 真机验证，推荐先读）
+  fix-report-sensors-audio.md 传感器/音频修复报告（缺陷 5~9 + 真机验证）
   fix-verification.md         WLAN 排查过程记录（含中间阶段的试错与更正）
   rootcause-wlan-panic.md     WLAN 早期根因分析（缺陷 1，含已排除的假设）
 tools/
@@ -274,6 +314,10 @@ tools/
   verify-boot.sh            刷入后验证：是否越过 panic 点、wlan0 是否出现
   rebuild-vendor-super.sh   重建 vendor/super 镜像并自动校验修复是否生效
 ```
+
+> **补丁需按编号顺序应用**，尤其是内核的 0010~0012
+> （补丁 → Revert → 重做）三者构成一条完整的历史链，顺序不能打乱。
+
 
 ## 上游基线
 
@@ -357,7 +401,21 @@ adb shell dumpsys sensorservice | grep 'h/w sensors'  # Total 45 ... 45 running
 # 音频
 adb shell 'cat /proc/asound/cards'                  # kona-mtp-snd-card
 adb shell 'dmesg | grep -E "skip wsa_macro|Sound card .* registered"'
-# 麦克风：录音后确认不是静音（缺陷 9 的症状是"能生成 .m4a 但内容静音"）
+
+# 麦克风（缺陷 9/10 的症状都是"能生成 .m4a 但内容静音"）
+adb shell 'tinymix -D 0 | grep -E "TX_CDC_DMA_TX_3|DMIC"'
+# 走 tinycap 绕开 HAL 录一段，确认不是数字静音：
+adb shell 'tinycap /sdcard/t.wav -D 0 -d 2 -c 2 -r 48000 -b 16 -T 3'
+adb pull /sdcard/t.wav && sox t.wav -n stat    # Maximum amplitude 应远大于 0
+
+# 扬声器（4 颗 CS35L41 应全部有声）
+adb shell 'tinymix -D 0 | grep -E "SPK[1-4] AMP Enable Switch"'   # 应存在且为 1
+adb shell 'cat /sys/kernel/debug/asoc/kona-mtp-snd-card/dais' 2>/dev/null
+
+# 指纹
+adb shell 'getprop | grep -iE "fingerprint|goodix"'
+adb shell 'service list | grep -i fingerprint'      # IBiometricsFingerprint
+adb shell 'dumpsys fingerprint' 2>/dev/null | head -20
 
 # VINTF 合法性（在主机上对镜像做，比刷机快得多）
 sudo mount -o ro,loop out/target/product/p11_pro_plus/vendor.img /tmp/vnew
@@ -409,13 +467,20 @@ adb shell 'cat /sys/fs/pstore/console-ramoops-0'   # 上次崩溃的完整日志
 - 缺陷 1 的初诊曾误判为内核 defconfig 问题（`CONFIG_QCA_CLD_WLAN=y`），
   已用 A/B 实验更正；`=m` 的改动保留（与原厂形态一致），但**它不是
   崩溃的修复手段**。详见 `docs/fix-report-final.md` 第六节。
-- **缺陷 9 是缺陷 7 引入的回归**（跳过 WSA 链路时漏掉挂在链路 0 上的
+- **缺陷 9 是缺陷 8 引入的回归**（跳过 WSA 链路时漏掉挂在链路 0 上的
   `.init` 回调，导致 mixer 控件缺失、麦克风静音）。两个补丁需一并应用。
+- **缺陷 11 的补丁链包含一次 Revert**（0010 补丁 → 0011 Revert → 0012 重做）。
+  这是保留真实开发历史的做法；应用时务必**按编号顺序**，`git am` 会正确处理。
+- **`AMP Enable Switch` 这个控件名不能想当然。** `SOC_SINGLE` 不会自动补
+  `" Switch"` 后缀，`mixer_paths.xml` 里找的是 `SPK1 AMP Enable Switch`；
+  写错名字时 audio_route **静默跳过**，不报错——表现为"4 扬声器只响 2 个"。
 - 无线投屏（`wifidisplayhalservice`）另有独立问题（缺 `libpng.so`），
   不在本仓库范围。
 - 未做的功能级验证：实际联网（需在 UI 输入密码）、相机拍照、GNSS 定位。
   已验证到「服务 running + provider 在位 + 能扫描到 AP」这一层。
 - `AudioFX` 服务存在 NPE，不影响开机与音频播放，属 LineageOS 侧组件问题。
+- 设备树侧另有 2 处**尚未提交**的改动（指纹 VINTF 重复声明的进一步修正），
+  不在本仓库补丁集内。
 
 ## 许可
 
