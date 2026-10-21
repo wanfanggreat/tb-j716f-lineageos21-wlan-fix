@@ -1,0 +1,53 @@
+From 307e1f009855beaf90fae1cd3db69b4e4fc453a4 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 00:22:08 +0800
+Subject: [PATCH 17/24] =?UTF-8?q?feat(wake):=20Phase=202B=20=E5=8F=8C?=
+ =?UTF-8?q?=E5=87=BB=E5=94=A4=E9=86=92=20+=20=E9=98=B2=E8=AF=AF=E8=A7=A6?=
+ =?UTF-8?q?=20+=20=E6=8B=BF=E8=B5=B7=E4=BA=AE=E5=B1=8F=EF=BC=88batch28?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- framework: config_supportDoubleTapWake=true（PMS 会调 power HAL 的
+  DOUBLE_TAP_TO_WAKE）；config_quickPickupSensorType=tilt_detector
+- lineage-sdk: config_proximityCheckOnWake(+默认开启)=true，使用 tmf8801
+- 双击/拿起需要人工实测，程序侧只能验证配置生效
+---
+ overlay/frameworks/base/core/res/res/values/config.xml |  8 ++++++++
+ overlay/lineage-sdk/lineage/res/res/values/config.xml  | 10 ++++++++--
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/overlay/frameworks/base/core/res/res/values/config.xml b/overlay/frameworks/base/core/res/res/values/config.xml
+index 3356fd6..ff7cf97 100644
+--- a/overlay/frameworks/base/core/res/res/values/config.xml
++++ b/overlay/frameworks/base/core/res/res/values/config.xml
+@@ -26,4 +26,12 @@
+     <bool name="config_dozeAlwaysOnDisplayAvailable">true</bool>
+     <bool name="config_dozeAfterScreenOffByDefault">true</bool>
+     <bool name="config_dozeAlwaysOnEnabled">false</bool>
++
++    <!--
++      Phase 2B：双击唤醒 + 拿起亮屏。
++      内核 Goodix 驱动的 gesture/enable 已经是 1，这里打开框架开关，
++      设置里才会出现“双击唤醒”；拿起唤醒用 tilt_detector（无 pick_up_gesture）。
++    -->
++    <bool name="config_supportDoubleTapWake">true</bool>
++    <string name="config_quickPickupSensorType" translatable="false">android.sensor.tilt_detector</string>
+ </resources>
+diff --git a/overlay/lineage-sdk/lineage/res/res/values/config.xml b/overlay/lineage-sdk/lineage/res/res/values/config.xml
+index faff326..8058247 100644
+--- a/overlay/lineage-sdk/lineage/res/res/values/config.xml
++++ b/overlay/lineage-sdk/lineage/res/res/values/config.xml
+@@ -1,3 +1,9 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<!-- Phase 0：空 overlay。后续放 config_deviceLightCapabilities 等 Lineage 资源配置。 -->
+-<resources />
++<resources>
++    <!--
++      Phase 2B：防误触唤醒（Prevent accidental wake-up）。
++      PowerManagerService 读这两个值；设备有 tmf8801 距离传感器。
++    -->
++    <bool name="config_proximityCheckOnWake">true</bool>
++    <bool name="config_proximityCheckOnWakeEnabledByDefault">true</bool>
++</resources>

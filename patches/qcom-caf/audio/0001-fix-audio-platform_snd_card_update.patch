@@ -1,0 +1,44 @@
+From 1efeba29ecfb0ce9db7cdc2a4992c9bad021190a Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 21:49:22 +0800
+Subject: [PATCH] =?UTF-8?q?fix(audio):=20=E7=A7=BB=E9=99=A4=E5=A4=B1?=
+ =?UTF-8?q?=E6=95=88=E7=9A=84=20platform=5Fsnd=5Fcard=5Fupdate=20=E8=A1=A5?=
+ =?UTF-8?q?=E4=B8=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+batch14 加的调用在本机静默失败（dlsym 有符号但无日志、无 ADD_TOPOLOGIES），
+且麦克风真因是采集拓扑 0x10018001 不可用（已由 audio_io_policy.conf 的
+app_type 69938->69948 修好），这条补丁没有作用。
+
+Change-Id: I4f297ec7eb90de2513596f8b2cfd815a06b3d39c
+---
+ hal/audio_hw.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/hal/audio_hw.c b/hal/audio_hw.c
+index 398c58b2f5..0c85dc1657 100644
+--- a/hal/audio_hw.c
++++ b/hal/audio_hw.c
+@@ -10852,6 +10852,20 @@ static int adev_open(const hw_module_t *module, const char *name,
+     audio_extn_sound_trigger_update_battery_status(adev->is_charging);
+     audio_extn_audiozoom_init();
+     pthread_mutex_unlock(&adev->lock);
++
++    /*
++     * 麦克风修复见 MIC-ROOTCAUSE-batch16.md：
++     * 采集 COPP 拓扑 0x10018001（app_type 69938 解析出来的那个）在 DSP 侧
++     * 开流会成功但数据全零；换成别的拓扑（如 69948 -> 0x10010315）就正常。
++     * 修法在 configs 的 audio_io_policy.conf 里把采集 app_type 换成 69948，
++     * 这里不需要额外动作。
++     *
++     * 曾经在这里调过 platform_snd_card_update() 想去补发 ACDB 的
++     * CORE_CUSTOM_TOPOLOGIES，实测该路径在本机静默失败（dlsym 有符号、
++     * 但调用后既无日志也无 ADM_CMD_ADD_TOPOLOGIES），且 0x10018001 即便
++     * 注册成功也不产出数据，故已移除。
++     */
++
+     /* Allocate memory for Device config params */
+     adev->device_cfg_params = (struct audio_device_config_param*)
+                                   calloc(platform_get_max_codec_backend(),

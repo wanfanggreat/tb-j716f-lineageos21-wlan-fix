@@ -1,0 +1,59 @@
+From fa72da0b584dd3994753879d0fd8f6ca27addff0 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 17:35:27 +0800
+Subject: [PATCH] =?UTF-8?q?fix(display):=20HWC=20=E4=B8=8D=E5=86=8D?=
+ =?UTF-8?q?=E5=A3=B0=E7=A7=B0=E6=94=AF=E6=8C=81=E8=83=8C=E5=85=89=E6=8E=A7?=
+ =?UTF-8?q?=E5=88=B6=EF=BC=8C=E8=AE=A9=E6=A1=86=E6=9E=B6=E5=9B=9E=E9=80=80?=
+ =?UTF-8?q?=E5=88=B0=20light=20HAL?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+现象：拖亮度条只有极亮/极暗两档。
+
+根因：GetDisplayBrightnessSupport() 对 built-in 面板返回 true，
+DisplayPowerController 因此把 mBacklight 置 null，走
+BacklightAdapter 的 SurfaceControl 分支 —— 完全绕过 light HAL，
+由 SurfaceFlinger 做软件调光（改像素值）。
+
+但本机 HWC 的 SetPanelBrightness 实际不写
+/sys/class/backlight/panel0-backlight/brightness：实测把系统亮度从
+255 改到 20，该 sysfs 值纹丝不动。软件调光把 0~1 的亮度压进极窄的
+可用区间，于是只能看到最暗和最亮。
+
+修复：GetDisplayBrightnessSupport 统一返回 false，框架回退到
+light HAL（lights.kona.so，LIGHT_ID_BACKLIGHT 已正确注册，实测
+sysfs 可写），由它直接写 panel0-backlight。
+
+Change-Id: Ie609279b8beb48de4d6b4f1ddd23055a4dacdb67
+---
+ composer/hwc_session.cpp | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/composer/hwc_session.cpp b/composer/hwc_session.cpp
+index 01f9245846..4f80877696 100644
+--- a/composer/hwc_session.cpp
++++ b/composer/hwc_session.cpp
+@@ -3537,7 +3537,21 @@ int32_t HWCSession::GetDisplayBrightnessSupport(hwc2_display_t display, bool *ou
+     DLOGE("Expected valid hwc_display");
+     return HWC2_ERROR_BAD_PARAMETER;
+   }
+-  *outSupport = (hwc_display_[display]->GetDisplayClass() == DISPLAY_CLASS_BUILTIN);
++
++  /*
++   * 这里本来报 true（面板是 built-in），框架因此认为 HWC 会接管背光，
++   * DisplayPowerController 走 BacklightAdapter 的 SurfaceControl 分支
++   * （mBacklight 为 null，light HAL 完全不用）。
++   *
++   * 但本机 HWC 的 SetPanelBrightness 实际没有下发到
++   * /sys/class/backlight/panel0-backlight/brightness —— 实测改系统亮度后
++   * sysfs 的值纹丝不动，只有 SurfaceFlinger 的软件调光在改像素。
++   * 软件调光下亮度只能在极窄区间里跳变，表现就是"要么极亮要么极暗"。
++   *
++   * 报 false 让框架回退到 light HAL（lights.kona.so，id=0 = BACKLIGHT），
++   * 它直接写 sysfs，是能正常工作的路径。
++   */
++  *outSupport = false;
+   return HWC2_ERROR_NONE;
+ }
+ 

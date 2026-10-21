@@ -1,0 +1,36 @@
+From 297a065e4937ffb720ef9c93368aed24a959715a Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 20:40:28 +0800
+Subject: [PATCH 24/24] =?UTF-8?q?fix(time):=20=E9=BB=98=E8=AE=A4=20NTP=20?=
+ =?UTF-8?q?=E6=94=B9=E4=B8=BA=E9=98=BF=E9=87=8C=E4=BA=91/=E5=9B=BD?=
+ =?UTF-8?q?=E5=86=85=20pool?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+AOSP 默认 time.android.com 在国内容易 UDP 123 超时，导致自动时间一直失败。Settings.Global.NTP_SERVER 仍优先于此配置。
+---
+ overlay/frameworks/base/core/res/res/values/config.xml | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/overlay/frameworks/base/core/res/res/values/config.xml b/overlay/frameworks/base/core/res/res/values/config.xml
+index 49a445e..3cd5dbf 100644
+--- a/overlay/frameworks/base/core/res/res/values/config.xml
++++ b/overlay/frameworks/base/core/res/res/values/config.xml
+@@ -17,6 +17,16 @@
+         <item>0:2:15</item>
+     </string-array>
+ 
++    <!--
++      时间同步：AOSP 默认的 time.android.com 在国内容易被阻断（UDP 123 超时），
++      导致自动时间一直失败、重启后回落到构建时间。改用国内可达的 NTP。
++      Settings.Global.NTP_SERVER 优先级更高，可用 settings put 覆盖这里。
++    -->
++    <string-array name="config_ntpServers" translatable="false">
++        <item>ntp://ntp.aliyun.com</item>
++        <item>ntp://cn.pool.ntp.org</item>
++    </string-array>
++
+     <!--
+       Phase 1B：Night Light / 降低亮色。
+       先走 HWC 加速路径（原厂面板支持 setColorTransform）；若出现花屏/异常，

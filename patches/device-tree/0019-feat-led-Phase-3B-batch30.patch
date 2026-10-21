@@ -1,0 +1,33 @@
+From 266424ee380b13c5d6c8433203aa6bdec8f68d22 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 00:38:24 +0800
+Subject: [PATCH 19/24] =?UTF-8?q?feat(led):=20Phase=203B=20=E7=94=B5?=
+ =?UTF-8?q?=E6=B1=A0=E7=81=AF=E8=83=BD=E5=8A=9B=EF=BC=88batch30=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+config_deviceLightCapabilities=202：
+RGB 电池灯(2) + 呼吸(8) + 电池灯(64) + 可调亮度(128)。
+硬件 red/green/blue 三颗 LED + breath 节点，QTI lights HAL 在跑。
+通知灯(235)待电池灯实测无冲突后再加。
+---
+ overlay/lineage-sdk/lineage/res/res/values/config.xml | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/overlay/lineage-sdk/lineage/res/res/values/config.xml b/overlay/lineage-sdk/lineage/res/res/values/config.xml
+index 8058247..57e74e9 100644
+--- a/overlay/lineage-sdk/lineage/res/res/values/config.xml
++++ b/overlay/lineage-sdk/lineage/res/res/values/config.xml
+@@ -6,4 +6,11 @@
+     -->
+     <bool name="config_proximityCheckOnWake">true</bool>
+     <bool name="config_proximityCheckOnWakeEnabledByDefault">true</bool>
++
++    <!--
++      Phase 3B：电池灯。硬件是 red/green/blue 三颗 LED（都有 breath 节点），
++      QTI lights HAL 在跑。202 = RGB 电池灯(2) + 呼吸(8) + 电池灯(64) + 可调亮度(128)。
++      先只做电池灯；通知灯(235)等实测无冲突再开。
++    -->
++    <integer name="config_deviceLightCapabilities">202</integer>
+ </resources>

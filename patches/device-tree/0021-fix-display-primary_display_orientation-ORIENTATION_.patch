@@ -1,0 +1,31 @@
+From c1f167422dab7340e4299edf6c5e26b40b9b8800 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 10:10:35 +0800
+Subject: [PATCH 21/24] =?UTF-8?q?fix(display):=20=E8=A1=A5=E5=8E=9F?=
+ =?UTF-8?q?=E5=8E=82=20primary=5Fdisplay=5Forientation=3DORIENTATION=5F270?=
+ =?UTF-8?q?=EF=BC=88batch32=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+原厂 vendor/build.prop 设置了 ro.surface_flinger.primary_display_orientation
+=ORIENTATION_270；我们的 vendor.prop 漏了，SF 默认按 ORIENTATION_0 处理，
+自动旋转画面相对机身方向偏 90°。用户实测：画面比机身多向右转 90°。
+---
+ vendor.prop | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/vendor.prop b/vendor.prop
+index 83aed6d..73f2884 100644
+--- a/vendor.prop
++++ b/vendor.prop
+@@ -81,6 +81,9 @@ ro.soc.model=SM8250
+ ro.surface_flinger.force_hwc_copy_for_virtual_displays=true
+ ro.surface_flinger.has_HDR_display=true
+ ro.surface_flinger.has_wide_color_display=true
++# 原厂 vendor/build.prop 的值：面板相对设备自然方向挂了 270°。
++# 不设这个（默认 ORIENTATION_0）时，自动旋转的画面会比机身方向偏 90°。
++ro.surface_flinger.primary_display_orientation=ORIENTATION_270
+ ro.surface_flinger.protected_contents=true
+ ro.surface_flinger.set_touch_timer_ms=200
+ ro.surface_flinger.use_color_management=true

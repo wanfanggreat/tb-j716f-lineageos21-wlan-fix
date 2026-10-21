@@ -1,0 +1,65 @@
+From 4da1a441375e31ec1371619fd85f4783e6da07f3 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 21:23:20 +0800
+Subject: [PATCH 11/24] =?UTF-8?q?fix(vintf):=20=E5=8E=BB=E6=8E=89=E6=8C=87?=
+ =?UTF-8?q?=E7=BA=B9=20HAL=20=E7=9A=84=E9=87=8D=E5=A4=8D=E5=A3=B0=E6=98=8E?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+batch21 验证通过：manifest.xml 不再手写 android.hardware.biometrics.fingerprint@2.1，
+prebuilt 里的同名 vintf fragment 也删除（AOSP service 模块自带一份）。
+此前重复声明导致 checkvintf 失败，开机卡第一屏。
+---
+ manifest.xml                                  | 19 +++++++++----------
+ ...are.biometrics.fingerprint@2.1-service.xml | 11 -----------
+ 2 files changed, 9 insertions(+), 21 deletions(-)
+ delete mode 100644 prebuilts/stock/etc/vintf/manifest/android.hardware.biometrics.fingerprint@2.1-service.xml
+
+diff --git a/manifest.xml b/manifest.xml
+index 8f6c63a..4f488d0 100644
+--- a/manifest.xml
++++ b/manifest.xml
+@@ -100,16 +100,15 @@
+         <fqname>@2.1::IGoodixFingerprintDaemon/default</fqname>
+         <fqname>@2.1::IGoodixFingerprintDaemonExt/default</fqname>
+     </hal>
+-    <!-- 标准指纹 HAL：framework 通过它发现指纹能力；缺这条设置里就没有指纹入口 -->
+-    <hal format="hidl">
+-        <name>android.hardware.biometrics.fingerprint</name>
+-        <transport>hwbinder</transport>
+-        <version>2.1</version>
+-        <interface>
+-            <name>IBiometricsFingerprint</name>
+-            <instance>default</instance>
+-        </interface>
+-    </hal>
++    <!--
++        注意：android.hardware.biometrics.fingerprint@2.1 的 VINTF 声明不要写在这里。
++        AOSP 的 android.hardware.biometrics.fingerprint@2.1-service 模块自己在
++        Android.bp 里带了 vintf_fragments（hardware/interfaces/biometrics/fingerprint/
++        2.1/default/android.hardware.biometrics.fingerprint@2.1-service.xml），
++        会随 service 一起装进 vendor/etc/vintf/manifest/。
++        再在这里手写一份就是重复声明 —— checkvintf 失败，开机卡第一屏。
++        （2026-10-17 踩过一次）
++    -->
+     <hal format="hidl">
+         <name>vendor.lenovo.hardware.battery</name>
+         <transport>hwbinder</transport>
+diff --git a/prebuilts/stock/etc/vintf/manifest/android.hardware.biometrics.fingerprint@2.1-service.xml b/prebuilts/stock/etc/vintf/manifest/android.hardware.biometrics.fingerprint@2.1-service.xml
+deleted file mode 100644
+index 115dd7b..0000000
+--- a/prebuilts/stock/etc/vintf/manifest/android.hardware.biometrics.fingerprint@2.1-service.xml
++++ /dev/null
+@@ -1,11 +0,0 @@
+-<manifest version="1.0" type="device">
+-    <hal format="hidl">
+-        <name>android.hardware.biometrics.fingerprint</name>
+-        <transport>hwbinder</transport>
+-        <version>2.1</version>
+-        <interface>
+-            <name>IBiometricsFingerprint</name>
+-            <instance>default</instance>
+-        </interface>
+-    </hal>
+-</manifest>

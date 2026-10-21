@@ -1,0 +1,43 @@
+From e8450af793b0a299b4f645bc0094cc2e1a31890e Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 11:38:42 +0800
+Subject: [PATCH 13/15] =?UTF-8?q?fix(display):=20rm69380=20=E9=9D=A2?=
+ =?UTF-8?q?=E6=9D=BF=20DBV=20=E5=AD=97=E8=8A=82=E5=BA=8F=EF=BC=8C=E4=BF=AE?=
+ =?UTF-8?q?=E4=BA=AE=E5=BA=A6=E9=94=AF=E9=BD=BF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+rm69380 EDO AMOLED 的 DCS 0x51 亮度命令是大端（init 序列 51 07 ff），
+但内核 mipi_dsi_dcs_set_display_brightness() 按小端发送，且 DT 没有
+qcom,mdss-dsi-bl-inverted-dbv 标志，导致运行时 DBV 字节反转，
+亮度条上出现约 8 个周期性的高低带。
+按 panel name 含 rm69380 强制 bl_inverted_dbv=true。
+---
+ techpack/display/msm/dsi/dsi_panel.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/techpack/display/msm/dsi/dsi_panel.c b/techpack/display/msm/dsi/dsi_panel.c
+index e1f231f13..fe003bfff 100644
+--- a/techpack/display/msm/dsi/dsi_panel.c
++++ b/techpack/display/msm/dsi/dsi_panel.c
+@@ -2419,6 +2419,19 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
+ 	panel->bl_config.bl_inverted_dbv = utils->read_bool(utils->data,
+ 		"qcom,mdss-dsi-bl-inverted-dbv");
+ 
++	/*
++	 * rm69380 (EDO AMOLED) takes the DCS 0x51 payload in big-endian
++	 * (its init sequence uses "51 07 ff"), while the generic MIPI
++	 * helper sends little-endian.  The stock DT does not carry the
++	 * inverted-dbv flag, so the runtime DBV is byte-swapped and the
++	 * panel brightness becomes a sawtooth as the slider moves.
++	 */
++	if (strstr(panel->name, "rm69380"))
++		panel->bl_config.bl_inverted_dbv = true;
++
++	pr_info("[dsi_panel] %s: bl_inverted_dbv=%d\n", panel->name,
++		panel->bl_config.bl_inverted_dbv);
++
+ 	if (panel->bl_config.type == DSI_BACKLIGHT_PWM) {
+ 		rc = dsi_panel_parse_bl_pwm_config(panel);
+ 		if (rc) {

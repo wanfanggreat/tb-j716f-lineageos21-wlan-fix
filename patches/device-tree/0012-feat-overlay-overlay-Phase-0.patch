@@ -1,0 +1,69 @@
+From 6aa8d15f1e53e6e4ede42c271190ea2d5d7d6472 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 21:29:22 +0800
+Subject: [PATCH 12/24] =?UTF-8?q?feat(overlay):=20=E5=BB=BA=E7=AB=8B=20ove?=
+ =?UTF-8?q?rlay=20=E9=AA=A8=E6=9E=B6=EF=BC=88Phase=200=EF=BC=8C=E7=A9=BA?=
+ =?UTF-8?q?=E8=A6=86=E7=9B=96=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- DEVICE_PACKAGE_OVERLAYS 指向 device/lenovo/p11_pro_plus/overlay
+- framework / Settings / lineage-sdk 各建一个空 config，仅验证机制
+- 不改任何实际资源值，预期行为与 batch22 完全一致
+---
+ device.mk                                                 | 3 +++
+ overlay/frameworks/base/core/res/res/values/config.xml    | 8 ++++++++
+ overlay/lineage-sdk/lineage/res/res/values/config.xml     | 3 +++
+ .../packages/apps/Settings/res/values/lineage_config.xml  | 3 +++
+ 4 files changed, 17 insertions(+)
+ create mode 100644 overlay/frameworks/base/core/res/res/values/config.xml
+ create mode 100644 overlay/lineage-sdk/lineage/res/res/values/config.xml
+ create mode 100644 overlay/packages/apps/Settings/res/values/lineage_config.xml
+
+diff --git a/device.mk b/device.mk
+index eb92be3..2b2e2fe 100644
+--- a/device.mk
++++ b/device.mk
+@@ -4,6 +4,9 @@
+ # SPDX-License-Identifier: Apache-2.0
+ #
+ 
++# Resource overlays（功能适配走 overlay，不动 frameworks/base 源文件）
++DEVICE_PACKAGE_OVERLAYS += device/lenovo/p11_pro_plus/overlay
++
+ # A/B
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota.mk)
+ 
+diff --git a/overlay/frameworks/base/core/res/res/values/config.xml b/overlay/frameworks/base/core/res/res/values/config.xml
+new file mode 100644
+index 0000000..5156501
+--- /dev/null
++++ b/overlay/frameworks/base/core/res/res/values/config.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  Phase 0：空 overlay。
++  仅用于验证 DEVICE_PACKAGE_OVERLAYS 机制本身不影响启动，不覆盖任何资源。
++  后续 Phase 1A/1B 会在这里加 config_defaultRefreshRate / config_defaultPeakRefreshRate /
++  config_setColorTransformAccelerated 等。
++-->
++<resources />
+diff --git a/overlay/lineage-sdk/lineage/res/res/values/config.xml b/overlay/lineage-sdk/lineage/res/res/values/config.xml
+new file mode 100644
+index 0000000..faff326
+--- /dev/null
++++ b/overlay/lineage-sdk/lineage/res/res/values/config.xml
+@@ -0,0 +1,3 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Phase 0：空 overlay。后续放 config_deviceLightCapabilities 等 Lineage 资源配置。 -->
++<resources />
+diff --git a/overlay/packages/apps/Settings/res/values/lineage_config.xml b/overlay/packages/apps/Settings/res/values/lineage_config.xml
+new file mode 100644
+index 0000000..6c11543
+--- /dev/null
++++ b/overlay/packages/apps/Settings/res/values/lineage_config.xml
+@@ -0,0 +1,3 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Phase 0：空 overlay。后续放 config_show_smooth_display 等 Settings 开关。 -->
++<resources />

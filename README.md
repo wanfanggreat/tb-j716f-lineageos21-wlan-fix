@@ -2,13 +2,14 @@
 
 联想小新 Pad Pro 2021（TB-J716F / 代号 `p11_pro_plus`，Snapdragon 870 / SM8250-AC）
 在 LineageOS 21（Android 14）上的移植修复记录：**WLAN、传感器栈、音频（含 4 颗
-CS35L41 扬声器功放）、指纹**。
+CS35L41 扬声器功放）、指纹，以及显示/电源/交互功能补齐**。
 
 本仓库包含完整的排查过程与修复所需的全部源码改动（补丁形式）。
 
 > **状态：下列缺陷均已修复并经真机验证。**
 > 设备稳定运行、WiFi 可扫描到 AP、45 个传感器全部在位、声卡已注册、
-> 麦克风采集正常、4 扬声器全部出声、指纹可用。
+> 麦克风采集正常、4 扬声器全部出声、指纹可用；刷新率切换、Night Light、
+> AOD/双击唤醒、自适应亮度、电池灯、手电筒也已启用。
 > 目标读者：为同一台设备（或其他 SM8250 设备）编译 LineageOS 的开发者。
 
 ---
@@ -68,6 +69,40 @@ CS35L41 扬声器功放）、指纹**。
 缺陷 13 与缺陷 6 是同一个坑的第二次出现：AOSP 的
 `android.hardware.biometrics.fingerprint@2.1-service` 模块自带
 `vintf_fragments`，不能又在 `manifest.xml` 里手写一遍。
+
+### 第五组：显示 / 电源 / 交互功能补齐（overlay）
+
+基础外设可用后，用 overlay 把原厂具备、LineageOS 默认关闭的能力逐项打开。
+这些提交只改设备树 overlay，不涉及 AOSP 框架代码。
+
+| 能力 | 提交（已发布） |
+|---|---|
+| 刷新率 60/90 Hz | `f52522a4b` |
+| Night Light / 降低亮色 | `a7a834d67` |
+| Doze / AOD | `810648376`、`0e5641645` |
+| 双击唤醒 + 防误触 + 拿起亮屏 | `307e1f009` |
+| 自适应亮度 | `3ec359b0c` |
+| 电池灯 | `266424ee3` |
+| 熄屏长按电源键手电筒 | `562f2e6d3` |
+| 屏幕方向 270° | `c1f167422` |
+| 触摸/手写笔方向补偿（IDC） | `99ed78f87` |
+| 默认 NTP 改为国内 pool | `297a065e4` |
+
+### 第六组：指纹启用、电池校准与显示细节
+
+| # | 内容 | 层次 | 提交（已发布） |
+|---|---|---|---|
+| 14 | 启用 Goodix HIDL 指纹：声明 `config_biometric_sensors`、关闭 qfp-daemon、用 `libhidlbase_shim` 提供旧 `gBnConstructorMap` 符号 | vendor / 框架 | `7b32abed3` |
+| 15 | Goodix 指纹 SPI 驱动（`gf_spi` + netlink + qbt 手势） | 内核 | `b138edcdf` |
+| 16 | Lenovo 电池校准参数写入 `qpnp-fg-gen4` / `qpnp-smb5` | 内核 | `d10178aad` |
+| 17 | rm69380 面板 DBV 字节序，修亮度锯齿 | 内核 | `e8450af79` |
+
+另有两个 AOSP HAL 仓库的单提交修复：
+
+| 仓库 | 内容 | 提交（已发布） |
+|---|---|---|
+| `hardware/qcom-caf/sm8250/audio` | 移除失效的 `platform_snd_card_update` 补丁 | `1efeba29e` |
+| `hardware/qcom-caf/sm8250/display` | HWC 不再声称支持背光控制，让框架回退到 light HAL | `fa72da0b5` |
 
 ### 反复踩到的两个坑（值得记住）
 
@@ -280,7 +315,7 @@ $ uptime                                     217s+（历史 panic 点在 126s）
 
 ```
 patches/
-  device-tree/          设备树仓库的 10 个提交
+  device-tree/          设备树仓库的 24 个提交
     0001  修复 wlan 固件符号链导致的 vendorimage 缺源
     0002  补齐基础 WCNSS 配置（内置驱动所需）
     0003  补回 init.qcom.rc 缺失的 vendor.qrtr-ns 服务定义      ← 缺陷 1
@@ -291,7 +326,21 @@ patches/
     0008  采集 app_type 69938 -> 69948，修复麦克风数字静音       ← 缺陷 10
     0009  补回 GoodIX 指纹 HAL 与 qfp-daemon                    ← 缺陷 12
     0010  GoodIX 指纹 HAL 注册 VINTF（修正安装方式）             ← 缺陷 13
-  kernel/               内核仓库的 12 个提交
+    0011  去掉指纹 HAL 的重复 VINTF 声明
+    0012  建立 overlay 骨架
+    0013  刷新率 60/90
+    0014  Night Light / 降低亮色
+    0015  开启 Doze/AOD
+    0016  SystemUI 打开 doze_display_state_supported
+    0017  双击唤醒 + 防误触 + 拿起亮屏
+    0018  自适应亮度
+    0019  电池灯
+    0020  熄屏长按电源键手电筒
+    0021  屏幕方向 270°
+    0022  触摸/手写笔方向补偿 IDC
+    0023  启用 Goodix 指纹 HAL
+    0024  默认 NTP 改为国内 pool
+  kernel/               内核仓库的 15 个提交
     0001  kona-perf: WLAN 驱动改为模块构建
     0002  kona 声卡不再挂载 wsa_macro DAI，并修 mic-bias 电压属性 ← 缺陷 8
     0003  麦克风采集失效：msm_int_audrx_init 从 WSA 链路迁到 RX 链路 ← 缺陷 9
@@ -304,6 +353,12 @@ patches/
     0010  补回 AMP Enable 控件（第一版，随后被 Revert）
     0011  Revert "补回 AMP Enable 控件"                        ← 保留完整历史
     0012  补回 AMP Enable Switch 控件（4 扬只响 2 个）           ← 缺陷 11 的最终修复
+    0013  rm69380 面板 DBV 字节序，修亮度锯齿                   ← 第六组 17
+    0014  Lenovo 电池校准                                      ← 第六组 16
+    0015  Goodix 指纹 SPI 驱动                                 ← 第六组 15
+  qcom-caf/
+    audio/0001   移除失效的 platform_snd_card_update 补丁
+    display/0001 HWC 不再声称支持背光控制，回退到 light HAL
 docs/
   fix-report-final.md         WLAN 完整修复报告（缺陷 1~4 + 真机验证）
   fix-report-sensors-audio.md 传感器/音频修复报告（缺陷 5~9 + 真机验证）
@@ -327,6 +382,8 @@ tools/
 |---|---|---|
 | `ungeskriptet/android_device_lenovo_p11_pro_plus` | `lineage-21` | `ac8ab86` |
 | `ungeskriptet/android_kernel_lenovo_sm8250` | `lineage-21` | `50476ae` |
+| `LineageOS/android_hardware_qcom_audio` | `lineage-21.0-caf-sm8250` | `d71b84a15` |
+| `LineageOS/android_hardware_qcom_display` | `lineage-21.0-caf-sm8250` | `58c486b7a` |
 
 ---
 
@@ -344,6 +401,15 @@ git am /path/to/patches/device-tree/*.patch
 git clone -b lineage-21 https://github.com/ungeskriptet/android_kernel_lenovo_sm8250
 cd android_kernel_lenovo_sm8250
 git am /path/to/patches/kernel/*.patch
+
+# qcom-caf audio / display
+git clone -b lineage-21.0-caf-sm8250 https://github.com/LineageOS/android_hardware_qcom_audio
+cd android_hardware_qcom_audio
+git am /path/to/patches/qcom-caf/audio/*.patch
+
+git clone -b lineage-21.0-caf-sm8250 https://github.com/LineageOS/android_hardware_qcom_display
+cd android_hardware_qcom_display
+git am /path/to/patches/qcom-caf/display/*.patch
 ```
 
 ### 方式二：直接使用 fork（已含全部修复）
@@ -352,6 +418,8 @@ git am /path/to/patches/kernel/*.patch
 
 - 设备树：`https://github.com/wanfanggreat/android_device_lenovo_p11_pro_plus`（分支 `lineage-21`）
 - 内核：`https://github.com/wanfanggreat/android_kernel_lenovo_sm8250`（分支 `lineage-21`）
+- qcom-caf audio：`https://github.com/wanfanggreat/android_hardware_qcom_audio`（分支 `lineage-21.0-caf-sm8250`）
+- qcom-caf display：`https://github.com/wanfanggreat/android_hardware_qcom_display`（分支 `lineage-21.0-caf-sm8250`）
 
 在 `.repo/local_manifests/` 里把这两个项目的来源指向上面的 fork 即可：
 
@@ -479,8 +547,9 @@ adb shell 'cat /sys/fs/pstore/console-ramoops-0'   # 上次崩溃的完整日志
 - 未做的功能级验证：实际联网（需在 UI 输入密码）、相机拍照、GNSS 定位。
   已验证到「服务 running + provider 在位 + 能扫描到 AP」这一层。
 - `AudioFX` 服务存在 NPE，不影响开机与音频播放，属 LineageOS 侧组件问题。
-- 设备树侧另有 2 处**尚未提交**的改动（指纹 VINTF 重复声明的进一步修正），
-  不在本仓库补丁集内。
+- 设备树侧另有 **3 项尚未提交**的改动（`vendor.lineage.health` 充电控制：
+  `BoardConfig.mk`、`rootdir/etc/init.target.rc`、`sepolicy/lineage_health/`），
+  按约定不在本仓库补丁集内。
 
 ## 许可
 
@@ -492,6 +561,7 @@ adb shell 'cat /sys/fs/pstore/console-ramoops-0'   # 上次崩溃的完整日志
 |---|---|
 | `patches/device-tree/` | Apache-2.0（设备树上游为 LineageOS 设备树） |
 | `patches/kernel/` | **GPL-2.0**（Linux 内核） |
+| `patches/qcom-caf/` | Apache-2.0（LineageOS hardware/qcom-caf） |
 
 原始代码版权归 The LineageOS Project、The Linux Foundation 及其他原作者所有。
 补丁仅修改配置与构建规则，不改变上游许可条款。

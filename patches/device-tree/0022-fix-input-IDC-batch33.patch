@@ -1,0 +1,66 @@
+From 99ed78f870a245b9acafa6480397b95b08a66b18 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 10:56:23 +0800
+Subject: [PATCH 22/24] =?UTF-8?q?fix(input):=20=E8=A7=A6=E6=91=B8/?=
+ =?UTF-8?q?=E6=89=8B=E5=86=99=E7=AC=94=E6=96=B9=E5=90=91=E8=A1=A5=E5=81=BF?=
+ =?UTF-8?q?=20IDC=EF=BC=88batch33=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+display 面板安装方向为 270°（primary_display_orientation=ORIENTATION_270），
+InputReader 只按显示 rotation 旋转原始触摸坐标，导致 90° 偏差。
+新增 goodix_ts.idc（touch.orientation=ORIENTATION_270）和 goodix_ts_pen.idc，
+安装到 /system/usr/idc。已用 root 注入原始 MT 事件 + 下拉通知栏验证映射正确。
+---
+ device.mk                 | 5 +++++
+ usr/idc/goodix_ts.idc     | 9 +++++++++
+ usr/idc/goodix_ts_pen.idc | 7 +++++++
+ 3 files changed, 21 insertions(+)
+ create mode 100644 usr/idc/goodix_ts.idc
+ create mode 100644 usr/idc/goodix_ts_pen.idc
+
+diff --git a/device.mk b/device.mk
+index 2b2e2fe..02b6015 100644
+--- a/device.mk
++++ b/device.mk
+@@ -7,6 +7,11 @@
+ # Resource overlays（功能适配走 overlay，不动 frameworks/base 源文件）
+ DEVICE_PACKAGE_OVERLAYS += device/lenovo/p11_pro_plus/overlay
+ 
++# 触摸/手写笔方向补偿：显示面板安装了 270°
++PRODUCT_COPY_FILES += \
++    $(LOCAL_PATH)/usr/idc/goodix_ts.idc:$(TARGET_COPY_OUT_SYSTEM)/usr/idc/goodix_ts.idc \
++    $(LOCAL_PATH)/usr/idc/goodix_ts_pen.idc:$(TARGET_COPY_OUT_SYSTEM)/usr/idc/goodix_ts_pen.idc
++
+ # A/B
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota.mk)
+ 
+diff --git a/usr/idc/goodix_ts.idc b/usr/idc/goodix_ts.idc
+new file mode 100644
+index 0000000..7ddb085
+--- /dev/null
++++ b/usr/idc/goodix_ts.idc
+@@ -0,0 +1,9 @@
++# goodix_ts 触摸屏方向补偿
++#
++# 显示面板相对设备自然方向安装了 270°（原厂 vendor/build.prop:
++# ro.surface_flinger.primary_display_orientation=ORIENTATION_270）。
++# 触摸原始坐标是面板原生方向（2560x1600），InputReader 默认按显示旋转
++# 直接映射，会差 90°。这里用 touch.orientation 抵消这个安装偏移。
++touch.deviceType = touchScreen
++touch.orientationAware = 1
++touch.orientation = ORIENTATION_270
+diff --git a/usr/idc/goodix_ts_pen.idc b/usr/idc/goodix_ts_pen.idc
+new file mode 100644
+index 0000000..9b30c93
+--- /dev/null
++++ b/usr/idc/goodix_ts_pen.idc
+@@ -0,0 +1,7 @@
++# goodix_ts 手写笔设备方向补偿
++#
++# 与 goodix_ts.idc 相同的面板安装方向补偿（设备名 goodix_ts,pen 的
++# canonical name 会把逗号替换成下划线，所以文件名是 goodix_ts_pen.idc）。
++touch.deviceType = touchScreen
++touch.orientationAware = 1
++touch.orientation = ORIENTATION_270

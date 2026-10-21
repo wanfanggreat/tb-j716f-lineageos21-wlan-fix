@@ -1,0 +1,33 @@
+From 0e5641645aca0f815f83c063b71543906a889517 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 23:54:08 +0800
+Subject: [PATCH 16/24] =?UTF-8?q?fix(doze):=20SystemUI=20=E6=89=93?=
+ =?UTF-8?q?=E5=BC=80=20doze=5Fdisplay=5Fstate=5Fsupported=EF=BC=88batch27?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+AOSP 默认 false，DozeParameters 因此认为面板不支持 DOZE 态，
+AOD 时直接请求 Display.STATE_OFF（黑屏）。实测 batch26:
+mWakefulness=Dozing 但 display powerMode=Off。补上后才会请求 STATE_DOZE。
+---
+ .../base/packages/SystemUI/res/values/config.xml         | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+ create mode 100644 overlay/frameworks/base/packages/SystemUI/res/values/config.xml
+
+diff --git a/overlay/frameworks/base/packages/SystemUI/res/values/config.xml b/overlay/frameworks/base/packages/SystemUI/res/values/config.xml
+new file mode 100644
+index 0000000..40a15f7
+--- /dev/null
++++ b/overlay/frameworks/base/packages/SystemUI/res/values/config.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!--
++      Phase 2A 补充：SystemUI 的 DozeParameters 用这个开关决定 AOD 时是否
++      请求 Display.STATE_DOZE。AOSP 默认 false，会让面板直接 OFF（AOD 黑屏）。
++      补成 true 后 DozeMachine 才会在 DOZE_AOD 状态下请求 DOZE。
++    -->
++    <bool name="doze_display_state_supported">true</bool>
++</resources>

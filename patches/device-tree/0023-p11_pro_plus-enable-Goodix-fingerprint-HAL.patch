@@ -1,0 +1,91 @@
+From 7b32abed30a6b546300ab5817e28d7bebf4b849e Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 20:22:15 +0800
+Subject: [PATCH 23/24] p11_pro_plus: enable Goodix fingerprint HAL
+
+- declare the HIDL fingerprint sensor in config_biometric_sensors,
+  required by Android 14's AuthService
+- disable qfp-daemon (persist.vendor.qfp=false) so vendor.fps_hal and
+  the Goodix HAL own IBiometricsFingerprint
+- install libhidlbase_shim and LD_PRELOAD it for vendor.fps_hal, to
+  provide the old gBnConstructorMap symbols expected by the stock
+  Goodix HIDL library
+- device.mk also picks up vendor.lineage.health-service.default (4B
+  charging control, already validated on device)
+---
+ device.mk                                                | 6 +++++-
+ overlay/frameworks/base/core/res/res/values/config.xml   | 9 +++++++++
+ ...ndroid.hardware.biometrics.fingerprint@2.1-service.rc | 3 +++
+ vendor.prop                                              | 4 +++-
+ 4 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/device.mk b/device.mk
+index 02b6015..66d839f 100644
+--- a/device.mk
++++ b/device.mk
+@@ -144,6 +144,9 @@ PRODUCT_COPY_FILES += \
+ # 指纹 HAL 的 VINTF 声明写在 manifest.xml 里（见该文件 android.hardware.biometrics.fingerprint
+ # 条目），不能用 PRODUCT_COPY_FILES 安装 vintf/manifest 下的 xml —— build 会直接报错。
+ 
++# GoodIX 的 vendor HIDL 库依赖旧 libhidlbase 的兼容符号。
++PRODUCT_PACKAGES += libhidlbase_shim
++
+ # Bluetooth
+ PRODUCT_PACKAGES += \
+     android.hardware.bluetooth@1.1.vendor \
+@@ -247,7 +250,8 @@ PRODUCT_COPY_FILES += \
+ # Health
+ PRODUCT_PACKAGES += \
+     android.hardware.health@2.1-impl \
+-    android.hardware.health@2.1-service
++    android.hardware.health@2.1-service \
++    vendor.lineage.health-service.default
+ 
+ # HIDL
+ PRODUCT_PACKAGES += \
+diff --git a/overlay/frameworks/base/core/res/res/values/config.xml b/overlay/frameworks/base/core/res/res/values/config.xml
+index 36e87da..49a445e 100644
+--- a/overlay/frameworks/base/core/res/res/values/config.xml
++++ b/overlay/frameworks/base/core/res/res/values/config.xml
+@@ -8,6 +8,15 @@
+     <integer name="config_defaultRefreshRate">0</integer>
+     <integer name="config_defaultPeakRefreshRate">90</integer>
+ 
++    <!--
++      HIDL 指纹：Android 14 的 AuthService 只按 config_biometric_sensors 注册
++      HIDL 传感器，AOSP 默认数组为空。格式为 id:modality:strength，
++      0:2:15 = ID0 / Fingerprint / Strong。
++    -->
++    <string-array name="config_biometric_sensors" translatable="false">
++        <item>0:2:15</item>
++    </string-array>
++
+     <!--
+       Phase 1B：Night Light / 降低亮色。
+       先走 HWC 加速路径（原厂面板支持 setColorTransform）；若出现花屏/异常，
+diff --git a/prebuilts/stock/etc/init/android.hardware.biometrics.fingerprint@2.1-service.rc b/prebuilts/stock/etc/init/android.hardware.biometrics.fingerprint@2.1-service.rc
+index 72adc0e..7a67828 100644
+--- a/prebuilts/stock/etc/init/android.hardware.biometrics.fingerprint@2.1-service.rc
++++ b/prebuilts/stock/etc/init/android.hardware.biometrics.fingerprint@2.1-service.rc
+@@ -6,3 +6,6 @@ service vendor.fps_hal /vendor/bin/hw/android.hardware.biometrics.fingerprint@2.
+     user system
+     group system input uhid
+     writepid /dev/cpuset/top-app/tasks
++    # GoodIX 的 vendor HIDL 库仍是针对旧 libhidlbase 编译的，需要补回
++    # gBnConstructorMap/gBsConstructorMap 兼容符号。
++    setenv LD_PRELOAD /vendor/lib64/libhidlbase_shim.so
+diff --git a/vendor.prop b/vendor.prop
+index 73f2884..3036cfc 100644
+--- a/vendor.prop
++++ b/vendor.prop
+@@ -57,7 +57,9 @@ persist.vendor.qcom.bluetooth.scram.enabled=false
+ persist.vendor.qcom.bluetooth.soc=hastings
+ persist.vendor.qcom.bluetooth.twsp_state.enabled=false
+ persist.vendor.qcomsysd.enabled=1
+-persist.vendor.qfp=true
++# 本机指纹走 Goodix HAL（/dev/goodix_fp）；QFP daemon 在缺少 qbt IPC
++# 的内核上初始化失败并抢占 HAL 接口，因此保持关闭。
++persist.vendor.qfp=false
+ persist.vendor.radio.enableadvancedscan=true
+ persist.vendor.sensors.allow_non_default_discovery=true
+ persist.vendor.sensors.sync_request=true

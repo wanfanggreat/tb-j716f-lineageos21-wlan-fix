@@ -1,0 +1,33 @@
+From 562f2e6d3bb687e02de1381857451b28748deb43 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 00:50:04 +0800
+Subject: [PATCH 20/24] =?UTF-8?q?feat(power):=20Phase=203C=20=E7=86=84?=
+ =?UTF-8?q?=E5=B1=8F=E9=95=BF=E6=8C=89=E7=94=B5=E6=BA=90=E9=94=AE=E6=89=8B?=
+ =?UTF-8?q?=E7=94=B5=E7=AD=92=EF=BC=88batch31=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+config_supportLongPressPowerWhenNonInteractive=true。
+LineageParts '按键' 里的开关（torch_long_press_power_gesture）默认 0，
+用户打开后熄屏/Doze 下长按电源键即可开关手电筒。
+---
+ overlay/frameworks/base/core/res/res/values/config.xml | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/overlay/frameworks/base/core/res/res/values/config.xml b/overlay/frameworks/base/core/res/res/values/config.xml
+index ea5866f..36e87da 100644
+--- a/overlay/frameworks/base/core/res/res/values/config.xml
++++ b/overlay/frameworks/base/core/res/res/values/config.xml
+@@ -101,4 +101,11 @@
+     </integer-array>
+     <integer name="config_screenBrightnessSettingMinimum">29</integer>
+     <integer name="config_autoBrightnessDarkeningLightDebounce">4000</integer>
++
++    <!--
++      Phase 3C：熄屏长按电源键手电筒。
++      开关在 LineageParts“按键”里（LineageSettings.System.TORCH_LONG_PRESS_POWER_GESTURE，
++      默认 0）；这个 bool 只负责允许“非交互状态下”也走长按逻辑。
++    -->
++    <bool name="config_supportLongPressPowerWhenNonInteractive">true</bool>
+ </resources>

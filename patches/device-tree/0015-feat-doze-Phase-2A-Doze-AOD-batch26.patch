@@ -1,0 +1,36 @@
+From 810648376f8a3eedd701a6085819a411919f4579 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 23:43:13 +0800
+Subject: [PATCH 15/24] =?UTF-8?q?feat(doze):=20Phase=202A=20=E5=BC=80?=
+ =?UTF-8?q?=E5=90=AF=20Doze/AOD=20=E8=83=BD=E5=8A=9B=EF=BC=88batch26?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- config_dozeComponent 指向 SystemUI DozeService（原来为空，能力未暴露）
+- config_dozeAlwaysOnDisplayAvailable=true / dozeAfterScreenOffByDefault=true
+- config_dozeAlwaysOnEnabled=false：默认不自动开 AOD，用户手动开启
+---
+ overlay/frameworks/base/core/res/res/values/config.xml | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/overlay/frameworks/base/core/res/res/values/config.xml b/overlay/frameworks/base/core/res/res/values/config.xml
+index 72d7e66..3356fd6 100644
+--- a/overlay/frameworks/base/core/res/res/values/config.xml
++++ b/overlay/frameworks/base/core/res/res/values/config.xml
+@@ -16,4 +16,14 @@
+     <bool name="config_setColorTransformAccelerated">true</bool>
+     <bool name="config_nightDisplayAvailable">true</bool>
+     <bool name="config_reduceBrightColorsAvailable">true</bool>
++
++    <!--
++      Phase 2A：Doze / AOD。
++      - DozeService 存在，但 AOSP 默认 config_dozeComponent 为空，能力从未暴露
++      - 默认不自动开 AOD（config_dozeAlwaysOnEnabled=false），用户可在设置里手动开
++    -->
++    <string name="config_dozeComponent" translatable="false">com.android.systemui/com.android.systemui.doze.DozeService</string>
++    <bool name="config_dozeAlwaysOnDisplayAvailable">true</bool>
++    <bool name="config_dozeAfterScreenOffByDefault">true</bool>
++    <bool name="config_dozeAlwaysOnEnabled">false</bool>
+ </resources>
