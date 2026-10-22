@@ -1,0 +1,161 @@
+From 2ed04c7a2020c6c6aa4cc76afe8b94e5c0bfeee8 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:44:31 +0800
+Subject: [PATCH 26/26] =?UTF-8?q?feat(selinux):=20=E5=90=AF=E7=94=A8?=
+ =?UTF-8?q?=E4=B8=A5=E6=A0=BC=E6=A8=A1=E5=BC=8F=E5=B9=B6=E8=A1=A5=E9=BD=90?=
+ =?UTF-8?q?=20Dolby=20C2=E3=80=81=E5=81=A5=E5=BA=B7=E5=85=85=E7=94=B5?=
+ =?UTF-8?q?=E4=B8=8E=20wakeup=20=E7=AD=96=E7=95=A5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- BoardConfig: 移除 androidboot.selinux=permissive，启用 private/public/vendor/lineage_health sepolicy
+- file_contexts: Dolby C2 服务使用 mediacodec_exec 域，避免严格模式下卡住相机初始化
+- genfs_contexts: 补 qbt_handler、无线充、PCIe 的 wakeup 标签并清理失效项
+- vendor_init.te: 允许写 vendor_mm_parser_prop
+- health: 新增 hal_lineage_health 策略，配置 input_suspend 充电开关
+---
+ BoardConfig.mk                                | 20 +++++++++++++++----
+ rootdir/etc/init.target.rc                    |  3 +++
+ sepolicy/lineage_health/hal_lineage_health.te |  5 +++++
+ sepolicy/vendor/file_contexts                 |  8 ++++++++
+ sepolicy/vendor/genfs_contexts                |  9 +++++----
+ sepolicy/vendor/vendor_init.te                |  3 +++
+ 6 files changed, 40 insertions(+), 8 deletions(-)
+ create mode 100644 sepolicy/lineage_health/hal_lineage_health.te
+
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 6d876e4..a643da2 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -72,7 +72,7 @@ TARGET_FS_CONFIG_GEN := $(DEVICE_PATH)/config.fs
+ # Kernel
+ BOARD_BOOTIMG_HEADER_VERSION := 2
+ BOARD_KERNEL_BASE := 0x00000000
+-BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xa90000 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=2048 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm androidboot.selinux=permissive
++BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xa90000 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=2048 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm
+ BOARD_KERNEL_PAGESIZE := 4096
+ BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
+ BOARD_KERNEL_IMAGE_NAME := Image
+@@ -172,9 +172,10 @@ VENDOR_SECURITY_PATCH := 2023-12-01
+ 
+ # Sepolicy
+ include device/qcom/sepolicy_vndr/SEPolicy.mk
+-#SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/private
+-#SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/public
+-#BOARD_VENDOR_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/vendor
++SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/private
++SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/public
++BOARD_VENDOR_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/vendor
++BOARD_VENDOR_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/lineage_health
+ BUILD_BROKEN_VENDOR_PROPERTY_NAMESPACE := true
+ 
+ # Verified Boot
+@@ -185,6 +186,17 @@ BOARD_AVB_RECOVERY_ALGORITHM := SHA256_RSA4096
+ BOARD_AVB_RECOVERY_ROLLBACK_INDEX := 1
+ BOARD_AVB_RECOVERY_ROLLBACK_INDEX_LOCATION := 1
+ 
++# Charging control (vendor.lineage.health)
++# 本机充电使能节点是 input_suspend，语义与默认相反：0=允许充电，1=停止。
++# 没有 deadline 节点，也没有真正的 bypass（停充后靠电池供电），
++# 所以只声明 TOGGLE，避免框架按 0mA 旁路假设计算回差。
++TARGET_HEALTH_CHARGING_CONTROL_SUPPORTS_TOGGLE := true
++TARGET_HEALTH_CHARGING_CONTROL_SUPPORTS_BYPASS := false
++TARGET_HEALTH_CHARGING_CONTROL_SUPPORTS_DEADLINE := false
++TARGET_HEALTH_CHARGING_CONTROL_CHARGING_PATH := /sys/class/power_supply/battery/input_suspend
++TARGET_HEALTH_CHARGING_CONTROL_CHARGING_ENABLED := 0
++TARGET_HEALTH_CHARGING_CONTROL_CHARGING_DISABLED := 1
++
+ # VINTF
+ DEVICE_FRAMEWORK_COMPATIBILITY_MATRIX_FILE := \
+     vendor/lineage/config/device_framework_matrix.xml \
+diff --git a/rootdir/etc/init.target.rc b/rootdir/etc/init.target.rc
+index 70b8fd8..257dbdb 100644
+--- a/rootdir/etc/init.target.rc
++++ b/rootdir/etc/init.target.rc
+@@ -90,6 +90,9 @@ on fs
+     chown root system /sys/class/ref/ref/brightness_crtl
+     chmod 0664 /sys/class/ref/ref/brightness_crtl
+     #-PEARLPLUST-1905, huangxinglue.wt, ADD, 2023.11.24, add display hidl
++    # vendor.lineage.health charging control: HAL runs as system
++    chown system system /sys/class/power_supply/battery/input_suspend
++    chmod 0660 /sys/class/power_supply/battery/input_suspend
+ 
+ on post-fs
+     # set RLIMIT_MEMLOCK to 64MB
+diff --git a/sepolicy/lineage_health/hal_lineage_health.te b/sepolicy/lineage_health/hal_lineage_health.te
+new file mode 100644
+index 0000000..3936182
+--- /dev/null
++++ b/sepolicy/lineage_health/hal_lineage_health.te
+@@ -0,0 +1,5 @@
++# vendor.lineage.health charging control HAL writes input_suspend.
++# The on-device label in this kernel is vendor_sysfs_battery_supply
++# (qcom sepolicy_vndr), not the legacy sysfs_battery_supply type that
++# device/lineage/sepolicy/qcom grants.
++rw_dir_file(hal_lineage_health_default, vendor_sysfs_battery_supply)
+diff --git a/sepolicy/vendor/file_contexts b/sepolicy/vendor/file_contexts
+index 7e1f27d..24fbc3f 100644
+--- a/sepolicy/vendor/file_contexts
++++ b/sepolicy/vendor/file_contexts
+@@ -2,6 +2,14 @@
+ /dev/socket/audio_hw_socket                                             u:object_r:audio_socket:s0
+ /sys/devices/platform/soc/a8c000.i2c/i2c-2/2-005a/f0_value              u:object_r:vendor_sysfs_audio:s0
+ 
++# Media / Dolby Codec2
++# Dolby C2 注册 android.hardware.media.c2::IComponentStore/default1。
++# 不标 domain 时它以 init 身份运行；严格模式下 init 不能执行 vendor_file，
++# 服务起不来，mediaserver 的 getService("default1") 永久阻塞，进而卡住
++# cameraserver 的 MediaCodecList 初始化（media.camera 不注册）。
++# 复用 QTI Codec2 的 mediacodec_exec 域。
++/vendor/bin/hw/vendor\.dolby\.media\.c2@1\.0-service                     u:object_r:mediacodec_exec:s0
++
+ # Bluetooth
+ /vendor/bin/init\.mi\.btmac\.sh                                         u:object_r:vendor_qti_init_shell_exec:s0
+ 
+diff --git a/sepolicy/vendor/genfs_contexts b/sepolicy/vendor/genfs_contexts
+index f80c16b..25d5693 100644
+--- a/sepolicy/vendor/genfs_contexts
++++ b/sepolicy/vendor/genfs_contexts
+@@ -67,12 +67,17 @@ genfscon sysfs /devices/platform/soc/c440000.qcom,spmi/spmi-0/spmi0-02/c440000.q
+ # Wakeup source stats
+ genfscon sysfs /devices/0306_02.01.00/wakeup                                                                                                       u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/goodix_ts.0/wakeup                                                                                                u:object_r:sysfs_wakeup:s0
++# qbt_handler 与 IDT 无线充的 wakeup 统计：不标成 sysfs_wakeup 时
++# system_suspend / suspend-service 和 health HAL 在严格模式下会被拒。
++genfscon sysfs /devices/platform/soc/soc:qcom,qbt_handler/wakeup                                                                                   u:object_r:sysfs_wakeup:s0
++genfscon sysfs /devices/platform/soc/884000.i2c/i2c-4/4-0025/power_supply/wireless                                                               u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/171c0000.slim/tavil-slim-pgd/wakeup                                                                           u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/17300000.qcom,lpass/wakeup                                                                                    u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/188101c.qcom,spss/wakeup                                                                                      u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/18800000.qcom,icnss/wakeup                                                                                    u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/1c00000.qcom,pcie/pci0000:00/0000:00:00.0/0000:01:00.0/1101_00.01.00/wakeup                                   u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/1c10000.qcom,pcie/pci0002:00/0002:00:00.0/0002:01:00.0/0306_02.01.00_EFS/wakeup                               u:object_r:sysfs_wakeup:s0
++genfscon sysfs /devices/platform/soc/1c08000.qcom,pcie/wakeup                                                                                      u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/1c10000.qcom,pcie/wakeup                                                                                      u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/5c00000.qcom,ssc/wakeup                                                                                       u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/8300000.qcom,turing/wakeup                                                                                    u:object_r:sysfs_wakeup:s0
+@@ -133,9 +138,5 @@ genfscon sysfs /devices/platform/soc/soc:goodix_fp/wakeup
+ genfscon sysfs /devices/platform/soc/soc:maxim_ds28e16/power_supply/batt_verify/wakeup                                                             u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/soc:oem_rf_cable/wakeup                                                                                       u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/soc/soc:qcom,ipa_uc/wakeup                                                                                        u:object_r:sysfs_wakeup:s0
+-genfscon sysfs /devices/platform/soc/soc:qcom,smp2p-cdsp/wakeup                                                                                    u:object_r:sysfs_wakeup:s0
+-genfscon sysfs /devices/platform/soc/soc:qcom,smp2p-dsps/wakeup                                                                                    u:object_r:sysfs_wakeup:s0
+-genfscon sysfs /devices/platform/soc/soc:qcom,smp2p-npu/wakeup                                                                                     u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/platform/vendor/vendor:extcon_usb1/wakeup                                                                                  u:object_r:sysfs_wakeup:s0
+-genfscon sysfs /devices/virtual/diag/diag/wakeup                                                                                                   u:object_r:sysfs_wakeup:s0
+ genfscon sysfs /devices/virtual/input/input5/wakeup85                                                                                              u:object_r:sysfs_wakeup:s0
+diff --git a/sepolicy/vendor/vendor_init.te b/sepolicy/vendor/vendor_init.te
+index 38d6ee6..cec3140 100644
+--- a/sepolicy/vendor/vendor_init.te
++++ b/sepolicy/vendor/vendor_init.te
+@@ -2,6 +2,9 @@ set_prop(vendor_init, vendor_alarm_boot_prop)
+ set_prop(vendor_init, vendor_power_prop)
+ set_prop(vendor_init, vendor_ssr_prop)
+ set_prop(vendor_init, vendor_video_prop)
++# vendor.prop 里的媒体解析器使能位必须由 vendor_init 写入，
++# 否则严格模式下该属性被拒，部分容器/编解码器不可用。
++set_prop(vendor_init, vendor_mm_parser_prop)
+ 
+ allow vendor_init {
+   proc_dirty

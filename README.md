@@ -9,7 +9,8 @@ CS35L41 扬声器功放）、指纹，以及显示/电源/交互功能补齐**�
 > **状态：下列缺陷均已修复并经真机验证。**
 > 设备稳定运行、WiFi 可扫描到 AP、45 个传感器全部在位、声卡已注册、
 > 麦克风采集正常、4 扬声器全部出声、指纹可用；刷新率切换、Night Light、
-> AOD/双击唤醒、自适应亮度、电池灯、手电筒也已启用。
+> AOD/双击唤醒、自适应亮度、电池灯、手电筒、充电控制也已启用，
+> SELinux 运行在严格模式。
 > 目标读者：为同一台设备（或其他 SM8250 设备）编译 LineageOS 的开发者。
 
 ---
@@ -88,7 +89,7 @@ CS35L41 扬声器功放）、指纹，以及显示/电源/交互功能补齐**�
 | 触摸/手写笔方向补偿（IDC） | `99ed78f87` |
 | 默认 NTP 改为国内 pool | `297a065e4` |
 
-### 第六组：指纹启用、电池校准与显示细节
+### 第六组：指纹启用、电池校准、显示细节与 SELinux 严格模式
 
 | # | 内容 | 层次 | 提交（已发布） |
 |---|---|---|---|
@@ -96,6 +97,8 @@ CS35L41 扬声器功放）、指纹，以及显示/电源/交互功能补齐**�
 | 15 | Goodix 指纹 SPI 驱动（`gf_spi` + netlink + qbt 手势） | 内核 | `b138edcdf` |
 | 16 | Lenovo 电池校准参数写入 `qpnp-fg-gen4` / `qpnp-smb5` | 内核 | `d10178aad` |
 | 17 | rm69380 面板 DBV 字节序，修亮度锯齿 | 内核 | `e8450af79` |
+| 18 | `wlan_mac.bin` 指向 per-chip persist 目录（`persist/qca6390/`） | 设备树 | `bb39823ed` |
+| 19 | 启用 SELinux 严格模式，补齐 Dolby C2、`vendor.lineage.health` 与 wakeup 策略 | 设备树 / sepolicy | `2ed04c7a2` |
 
 另有两个 AOSP HAL 仓库的单提交修复：
 
@@ -315,7 +318,7 @@ $ uptime                                     217s+（历史 panic 点在 126s）
 
 ```
 patches/
-  device-tree/          设备树仓库的 24 个提交
+  device-tree/          设备树仓库的 26 个提交
     0001  修复 wlan 固件符号链导致的 vendorimage 缺源
     0002  补齐基础 WCNSS 配置（内置驱动所需）
     0003  补回 init.qcom.rc 缺失的 vendor.qrtr-ns 服务定义      ← 缺陷 1
@@ -340,6 +343,8 @@ patches/
     0022  触摸/手写笔方向补偿 IDC
     0023  启用 Goodix 指纹 HAL
     0024  默认 NTP 改为国内 pool
+    0025  wlan_mac.bin 指向 persist/qca6390          ← 第六组 18
+    0026  启用 SELinux 严格模式并补齐策略             ← 第六组 19
   kernel/               内核仓库的 15 个提交
     0001  kona-perf: WLAN 驱动改为模块构建
     0002  kona 声卡不再挂载 wsa_macro DAI，并修 mic-bias 电压属性 ← 缺陷 8
@@ -547,9 +552,12 @@ adb shell 'cat /sys/fs/pstore/console-ramoops-0'   # 上次崩溃的完整日志
 - 未做的功能级验证：实际联网（需在 UI 输入密码）、相机拍照、GNSS 定位。
   已验证到「服务 running + provider 在位 + 能扫描到 AP」这一层。
 - `AudioFX` 服务存在 NPE，不影响开机与音频播放，属 LineageOS 侧组件问题。
-- 设备树侧另有 **3 项尚未提交**的改动（`vendor.lineage.health` 充电控制：
-  `BoardConfig.mk`、`rootdir/etc/init.target.rc`、`sepolicy/lineage_health/`），
-  按约定不在本仓库补丁集内。
+- 充电控制由 `vendor.lineage.health` 提供（节点 `input_suspend`，
+  0=允许充电 / 1=停止）：本机没有 deadline 节点，也没有真正的旁路充电，
+  因此只声明 **TOGGLE**，停充后由电池供电，不支持 bypass/deadline。
+- SELinux 已转为严格模式（不再使用 `androidboot.selinux=permissive`）。
+  若在别的机型上复用 0026，需按各自的 sysfs 路径重新核对 `genfs_contexts`
+  与 `file_contexts`，否则相关服务会被拒绝。
 
 ## 许可
 

@@ -1,0 +1,27 @@
+From bb39823ed69618eb333a43f46455f357e4da04e4 Mon Sep 17 00:00:00 2001
+From: wanfanggreat <74281246+wanfanggreat@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:44:27 +0800
+Subject: [PATCH 25/26] =?UTF-8?q?fix(wlan):=20wlan=5Fmac.bin=20=E6=8C=87?=
+ =?UTF-8?q?=E5=90=91=20persist/qca6390?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+与 qca6390 子目录下的实际 MAC 文件保持一致，修复 Wi-Fi MAC 读取路径。
+---
+ Android.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Android.mk b/Android.mk
+index 14191cd..95e235f 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -166,7 +166,7 @@ $(WIFI_FIRMWARE_SYMLINKS): $(LOCAL_INSTALLED_MODULE)
+ 	@echo "Creating wifi firmware symlinks: $@"
+ 	@mkdir -p $@/qca6390 $@/qca6490
+ 	$(hide) ln -sf /vendor/etc/wifi/WCNSS_qcom_cfg.ini $@/WCNSS_qcom_cfg.ini
+-	$(hide) ln -sf /mnt/vendor/persist/wlan_mac.bin $@/wlan_mac.bin
++	$(hide) ln -sf /mnt/vendor/persist/qca6390/wlan_mac.bin $@/wlan_mac.bin
+ 	$(hide) ln -sf /vendor/etc/wifi/qca6390/WCNSS_qcom_cfg.ini $@/qca6390/WCNSS_qcom_cfg.ini
+ 	$(hide) ln -sf /mnt/vendor/persist/qca6390/wlan_mac.bin $@/qca6390/wlan_mac.bin
+ 	$(hide) ln -sf /vendor/etc/wifi/qca6490/WCNSS_qcom_cfg.ini $@/qca6490/WCNSS_qcom_cfg.ini
